@@ -1,0 +1,12 @@
+wfdb
+numpy
+scipy
+pandas
+scikit-learn
+torch
+torchvision
+matplotlib
+seaborn
+tqdm
+umap-learn
+pyyaml

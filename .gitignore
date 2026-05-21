@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ECG datasets and generated artifacts
+mit-bih-arrhythmia-database-1.0.0/
+st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/
+data/raw/
+data/processed/
+outputs/
+*.npz
+*.pt
+*.pth
+*.ckpt
