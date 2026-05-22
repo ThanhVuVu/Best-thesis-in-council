@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from src.models import build_model
 from src.training.evaluate import predict_model
@@ -68,12 +69,14 @@ def train_source_only(
     history = []
     best_path = ckpt_dir / "best.pt"
 
-    for epoch in range(1, int(train_cfg["epochs"]) + 1):
+    epoch_bar = tqdm(range(1, int(train_cfg["epochs"]) + 1), desc="epochs")
+    for epoch in epoch_bar:
         model.train()
         losses = []
         train_true = []
         train_pred = []
-        for x, y in train_loader:
+        batch_bar = tqdm(train_loader, desc=f"train epoch {epoch}", leave=False)
+        for x, y in batch_bar:
             x = x.to(device)
             y = y.to(device)
             optimizer.zero_grad(set_to_none=True)
@@ -84,9 +87,10 @@ def train_source_only(
             losses.append(float(loss.detach().cpu()))
             train_true.append(y.detach().cpu().numpy())
             train_pred.append(logits.argmax(dim=1).detach().cpu().numpy())
+            batch_bar.set_postfix(loss=f"{losses[-1]:.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}")
 
         train_metrics = classification_metrics(np.concatenate(train_true), np.concatenate(train_pred))
-        val_result = predict_model(model, val_loader, device)
+        val_result = predict_model(model, val_loader, device, desc=f"val epoch {epoch}")
         val_metrics = val_result["metrics"]
         scheduler.step(val_metrics["macro_f1"])
 
@@ -101,6 +105,11 @@ def train_source_only(
         }
         history.append(row)
         print(row)
+        epoch_bar.set_postfix(
+            train_f1=f"{train_metrics['macro_f1']:.4f}",
+            val_f1=f"{val_metrics['macro_f1']:.4f}",
+            best_f1=f"{max(best_f1, val_metrics['macro_f1']):.4f}",
+        )
 
         if val_metrics["macro_f1"] > best_f1:
             best_f1 = val_metrics["macro_f1"]

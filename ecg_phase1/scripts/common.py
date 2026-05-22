@@ -31,4 +31,20 @@ def cfg_path(config: dict, *keys: str) -> Path:
 
 
 def device_from_torch() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+
+    major, minor = torch.cuda.get_device_capability(0)
+    arch = f"sm_{major}{minor}"
+    supported_arches = torch.cuda.get_arch_list()
+    if supported_arches and arch not in supported_arches:
+        gpu_name = torch.cuda.get_device_name(0)
+        supported = ", ".join(supported_arches)
+        raise RuntimeError(
+            f"CUDA device {gpu_name} has compute capability {arch}, but this PyTorch "
+            f"install was not built with support for it. Supported CUDA arches: {supported}. "
+            "On Kaggle, switch the accelerator to T4/P100-compatible PyTorch, or install a "
+            "PyTorch wheel that supports this GPU before training."
+        )
+
+    return torch.device("cuda")

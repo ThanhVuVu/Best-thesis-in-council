@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from src.training.metrics import classification_metrics
 
@@ -15,22 +16,27 @@ def predict_model(
     loader: DataLoader,
     device: torch.device,
     collect_embeddings: bool = False,
+    desc: str = "evaluate",
 ) -> dict[str, Any]:
+    model = model.to(device)
     model.eval()
+    model_device = next(model.parameters()).device
+    print(f"{desc}: model_device={model_device}, target_device={device}, batches={len(loader)}")
     y_true = []
     y_pred = []
     probs = []
     embeddings = []
     metadata = []
 
-    for batch in loader:
+    progress = tqdm(loader, desc=desc, leave=False)
+    for batch in progress:
         if len(batch) == 3:
             x, y, meta = batch
             metadata.extend(_batch_metadata_to_rows(meta))
         else:
             x, y = batch
-        x = x.to(device)
-        y = y.to(device)
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
         if collect_embeddings:
             logits, emb = model(x, return_embedding=True)
             embeddings.append(emb.detach().cpu().numpy())
@@ -41,6 +47,7 @@ def predict_model(
         y_true.append(y.detach().cpu().numpy())
         y_pred.append(pred.detach().cpu().numpy())
         probs.append(p.detach().cpu().numpy())
+        progress.set_postfix(batch_size=int(x.shape[0]), device=str(x.device))
 
     result = {
         "y_true": np.concatenate(y_true),

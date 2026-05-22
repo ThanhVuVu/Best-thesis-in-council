@@ -16,6 +16,7 @@ def main() -> None:
     args = parser.parse_args()
     config = load_phase1_config(args.config)
     device = device_from_torch()
+    print(f"Using device: {device}")
     model, _ = load_model_from_checkpoint(cfg_path({"paths": {"x": args.checkpoint}, "_base_dir": config["_base_dir"]}, "paths", "x"), device)
     dataset = ECGBeatDataset(cfg_path(config, "paths", "processed_dir") / "mitbih_test.npz", return_metadata=True)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))

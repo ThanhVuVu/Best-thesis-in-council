@@ -21,6 +21,7 @@ def main() -> None:
     args = parser.parse_args()
     config = load_phase1_config(args.config)
     device = device_from_torch()
+    print(f"Using device: {device}")
     checkpoint_path = cfg_path({"paths": {"checkpoint": args.checkpoint}, "_base_dir": config["_base_dir"]}, "paths", "checkpoint")
     model, _ = load_model_from_checkpoint(checkpoint_path, device)
     processed = cfg_path(config, "paths", "processed_dir")
@@ -35,8 +36,14 @@ def main() -> None:
     mit = ECGBeatDataset(processed / "mitbih_test.npz", return_metadata=True)
     inc = ECGBeatDataset(processed / "incart_test.npz", return_metadata=True)
     subset = _balanced_subset([mit, inc], int(config["visualization"]["max_points_per_domain"]), int(config["seed"]))
-    loader = DataLoader(subset, batch_size=256, shuffle=False, num_workers=0)
-    result = predict_model(model, loader, device, collect_embeddings=True)
+    loader = DataLoader(
+        subset,
+        batch_size=256,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+    result = predict_model(model, loader, device, collect_embeddings=True, desc="collect embeddings")
     domains = [str(m["domain"]) for m in result["metadata"]]
     plot_umap_embeddings(
         result["embeddings"],

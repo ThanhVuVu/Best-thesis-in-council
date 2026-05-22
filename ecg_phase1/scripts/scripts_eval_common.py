@@ -14,8 +14,14 @@ from src.visualization.plot_confusion import plot_confusion_matrix
 
 def evaluate_and_save(model, dataset, device, output_dir: str | Path, dataset_name: str, setting: str) -> dict:
     output = Path(output_dir)
-    loader = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=0)
-    result = predict_model(model, loader, device)
+    loader = DataLoader(
+        dataset,
+        batch_size=256,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+    result = predict_model(model, loader, device, desc=f"eval {dataset_name}")
     metrics = result["metrics"]
     metrics.update({"dataset": dataset_name, "setting": setting})
 
