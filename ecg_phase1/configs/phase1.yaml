@@ -5,6 +5,7 @@ paths:
   incart_raw_dir: ../st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/files
   processed_dir: data/processed
   output_dir: outputs
+  checkpoint_backup_dir: null
 
 data:
   source_dataset: mitbih

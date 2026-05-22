@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -68,9 +71,15 @@ def train_source_only(
     stale_epochs = 0
     history = []
     best_path = ckpt_dir / "best.pt"
+    latest_path = ckpt_dir / "latest.pt"
+    backup_dir = _checkpoint_backup_dir(config)
+    if backup_dir is not None:
+        ensure_dir(backup_dir)
+        print(f"Checkpoint backup enabled: {backup_dir}")
 
     epoch_bar = tqdm(range(1, int(train_cfg["epochs"]) + 1), desc="epochs")
     for epoch in epoch_bar:
+        should_stop = False
         model.train()
         losses = []
         train_true = []
@@ -115,21 +124,47 @@ def train_source_only(
             best_f1 = val_metrics["macro_f1"]
             best_epoch = epoch
             stale_epochs = 0
-            torch.save({
-                "model_state_dict": model.state_dict(),
-                "model_name": train_cfg["model"],
-                "epoch": epoch,
-                "best_macro_f1": best_f1,
-                "config": config,
-            }, best_path)
+            best_payload = _checkpoint_payload(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                config=config,
+                model_name=train_cfg["model"],
+                epoch=epoch,
+                best_f1=best_f1,
+                best_epoch=best_epoch,
+                stale_epochs=stale_epochs,
+                history=history,
+            )
+            _save_checkpoint(best_payload, best_path, backup_dir)
         else:
             stale_epochs += 1
             if stale_epochs >= patience:
-                break
+                should_stop = True
+
+        latest_payload = _checkpoint_payload(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            config=config,
+            model_name=train_cfg["model"],
+            epoch=epoch,
+            best_f1=best_f1,
+            best_epoch=best_epoch,
+            stale_epochs=stale_epochs,
+            history=history,
+        )
+        _save_checkpoint(latest_payload, latest_path, backup_dir)
+        if should_stop:
+            break
 
     _write_history_csv(history, log_dir / "train_log.csv")
+    if backup_dir is not None:
+        _copy_to_backup(log_dir / "train_log.csv", backup_dir)
     return {
         "best_checkpoint": str(best_path),
+        "latest_checkpoint": str(latest_path),
+        "checkpoint_backup_dir": str(backup_dir) if backup_dir is not None else None,
         "best_epoch": best_epoch,
         "best_val_macro_f1": best_f1,
         "history": history,
@@ -137,9 +172,22 @@ def train_source_only(
 
 
 def load_model_from_checkpoint(checkpoint_path: str | Path, device: torch.device):
+    checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model = build_model(checkpoint["model_name"], num_classes=3).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
+    fingerprint = checkpoint.get("model_state_fingerprint") or _state_dict_fingerprint(checkpoint["model_state_dict"])
+    print(
+        "Loaded checkpoint:",
+        {
+            "path": str(checkpoint_path),
+            "model_name": checkpoint.get("model_name"),
+            "epoch": checkpoint.get("epoch"),
+            "best_epoch": checkpoint.get("best_epoch"),
+            "best_macro_f1": checkpoint.get("best_macro_f1"),
+            "fingerprint": fingerprint,
+        },
+    )
     return model, checkpoint
 
 
@@ -157,3 +205,76 @@ def _write_history_csv(rows: list[dict[str, Any]], path: str | Path) -> None:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _checkpoint_payload(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    config: dict[str, Any],
+    model_name: str,
+    epoch: int,
+    best_f1: float,
+    best_epoch: int,
+    stale_epochs: int,
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "model_name": model_name,
+        "epoch": epoch,
+        "best_macro_f1": best_f1,
+        "best_epoch": best_epoch,
+        "stale_epochs": stale_epochs,
+        "history": history,
+        "config": config,
+        "model_state_fingerprint": _state_dict_fingerprint(model.state_dict()),
+    }
+
+
+def _save_checkpoint(payload: dict[str, Any], path: str | Path, backup_dir: Path | None = None) -> None:
+    path = Path(path)
+    ensure_dir(path.parent)
+    torch.save(payload, path)
+    print(
+        f"Saved checkpoint {path} "
+        f"(epoch={payload.get('epoch')}, best_epoch={payload.get('best_epoch')}, "
+        f"best_macro_f1={payload.get('best_macro_f1'):.6f}, "
+        f"fingerprint={payload.get('model_state_fingerprint')})"
+    )
+    if backup_dir is not None:
+        _copy_to_backup(path, backup_dir)
+
+
+def _copy_to_backup(path: str | Path, backup_dir: Path) -> None:
+    path = Path(path)
+    if not path.exists():
+        return
+    ensure_dir(backup_dir)
+    shutil.copy2(path, backup_dir / path.name)
+
+
+def _checkpoint_backup_dir(config: dict[str, Any]) -> Path | None:
+    env_value = os.environ.get("ECG_PHASE1_CHECKPOINT_BACKUP_DIR")
+    config_value = config.get("paths", {}).get("checkpoint_backup_dir")
+    value = env_value or config_value
+    if value in (None, "", "null", "None"):
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    base_dir = Path(config.get("_base_dir", "."))
+    return (base_dir / path).resolve()
+
+
+def _state_dict_fingerprint(state_dict: dict[str, torch.Tensor]) -> str:
+    hasher = hashlib.sha256()
+    for key in sorted(state_dict.keys()):
+        tensor = state_dict[key].detach().cpu().contiguous()
+        hasher.update(key.encode("utf-8"))
+        hasher.update(str(tuple(tensor.shape)).encode("utf-8"))
+        hasher.update(str(tensor.dtype).encode("utf-8"))
+        hasher.update(tensor.numpy().tobytes())
+    return hasher.hexdigest()[:16]
