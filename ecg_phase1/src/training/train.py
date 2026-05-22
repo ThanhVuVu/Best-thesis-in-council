@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from src.models import build_model
 from src.training.evaluate import predict_model
@@ -77,14 +77,20 @@ def train_source_only(
         ensure_dir(backup_dir)
         print(f"Checkpoint backup enabled: {backup_dir}")
 
-    epoch_bar = tqdm(range(1, int(train_cfg["epochs"]) + 1), desc="epochs")
-    for epoch in epoch_bar:
+    total_epochs = int(train_cfg["epochs"])
+    for epoch in range(1, total_epochs + 1):
         should_stop = False
         model.train()
         losses = []
         train_true = []
         train_pred = []
-        batch_bar = tqdm(train_loader, desc=f"train epoch {epoch}", leave=False)
+        batch_bar = tqdm(
+            train_loader,
+            desc=f"epoch {epoch}/{total_epochs}",
+            leave=True,
+            dynamic_ncols=True,
+            mininterval=1.0,
+        )
         for x, y in batch_bar:
             x = x.to(device)
             y = y.to(device)
@@ -96,7 +102,7 @@ def train_source_only(
             losses.append(float(loss.detach().cpu()))
             train_true.append(y.detach().cpu().numpy())
             train_pred.append(logits.argmax(dim=1).detach().cpu().numpy())
-            batch_bar.set_postfix(loss=f"{losses[-1]:.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}")
+            batch_bar.set_postfix(loss=f"{losses[-1]:.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}", refresh=False)
 
         train_metrics = classification_metrics(np.concatenate(train_true), np.concatenate(train_pred))
         val_result = predict_model(model, val_loader, device, desc=f"val epoch {epoch}")
@@ -113,11 +119,11 @@ def train_source_only(
             "lr": optimizer.param_groups[0]["lr"],
         }
         history.append(row)
-        print(row)
-        epoch_bar.set_postfix(
-            train_f1=f"{train_metrics['macro_f1']:.4f}",
-            val_f1=f"{val_metrics['macro_f1']:.4f}",
-            best_f1=f"{max(best_f1, val_metrics['macro_f1']):.4f}",
+        print(
+            f"epoch {epoch}/{total_epochs}: "
+            f"loss={row['loss']:.4f}, train_f1={row['train_macro_f1']:.4f}, "
+            f"val_f1={row['val_macro_f1']:.4f}, lr={row['lr']:.2e}",
+            flush=True,
         )
 
         if val_metrics["macro_f1"] > best_f1:

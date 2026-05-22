@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from src.training.metrics import classification_metrics
 
@@ -28,7 +28,7 @@ def predict_model(
     embeddings = []
     metadata = []
 
-    progress = tqdm(loader, desc=desc, leave=False)
+    progress = tqdm(loader, desc=desc, leave=True, dynamic_ncols=True, mininterval=1.0)
     for batch in progress:
         if len(batch) == 3:
             x, y, meta = batch
@@ -47,7 +47,7 @@ def predict_model(
         y_true.append(y.detach().cpu().numpy())
         y_pred.append(pred.detach().cpu().numpy())
         probs.append(p.detach().cpu().numpy())
-        progress.set_postfix(batch_size=int(x.shape[0]), device=str(x.device))
+        progress.set_postfix(batch_size=int(x.shape[0]), device=str(x.device), refresh=False)
 
     result = {
         "y_true": np.concatenate(y_true),
