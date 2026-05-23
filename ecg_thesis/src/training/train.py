@@ -70,8 +70,13 @@ def train_source_only(
     patience = int(train_cfg["early_stopping_patience"])
     stale_epochs = 0
     history = []
-    best_path = ckpt_dir / "best.pt"
-    latest_path = ckpt_dir / "latest.pt"
+    checkpoint_prefix = train_cfg.get("checkpoint_prefix", "")
+    if checkpoint_prefix:
+        best_path = ckpt_dir / f"{checkpoint_prefix}_best.pt"
+        latest_path = ckpt_dir / f"{checkpoint_prefix}_latest.pt"
+    else:
+        best_path = ckpt_dir / "best.pt"
+        latest_path = ckpt_dir / "latest.pt"
     backup_dir = _checkpoint_backup_dir(config)
     if backup_dir is not None:
         ensure_dir(backup_dir)
@@ -199,7 +204,8 @@ def load_model_from_checkpoint(checkpoint_path: str | Path, device: torch.device
 
 def _dataset_labels(dataset) -> np.ndarray:
     if hasattr(dataset, "indices") and hasattr(dataset, "dataset"):
-        return dataset.dataset.y[np.asarray(dataset.indices)]
+        parent_labels = _dataset_labels(dataset.dataset)
+        return parent_labels[np.asarray(dataset.indices)]
     return dataset.y
 
 
@@ -263,7 +269,7 @@ def _copy_to_backup(path: str | Path, backup_dir: Path) -> None:
 
 
 def _checkpoint_backup_dir(config: dict[str, Any]) -> Path | None:
-    env_value = os.environ.get("ECG_PHASE1_CHECKPOINT_BACKUP_DIR")
+    env_value = os.environ.get("ECG_PHASE2_CHECKPOINT_BACKUP_DIR") or os.environ.get("ECG_PHASE1_CHECKPOINT_BACKUP_DIR")
     config_value = config.get("paths", {}).get("checkpoint_backup_dir")
     value = env_value or config_value
     if value in (None, "", "null", "None"):

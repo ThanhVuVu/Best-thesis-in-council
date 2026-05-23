@@ -1,0 +1,313 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import math
+import os
+import shutil
+from itertools import cycle
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from src.models.dann import DANNModel
+from src.training.evaluate import predict_model
+from src.training.metrics import classification_metrics
+from src.training.train import compute_class_weights
+from src.utils.io import ensure_dir
+
+
+def train_dann(
+    source_train_dataset,
+    source_val_dataset,
+    target_dataset,
+    config: dict[str, Any],
+    output_dir: str | Path,
+    device: torch.device,
+) -> dict[str, Any]:
+    model_cfg = config["model"]
+    train_cfg = config["training"]
+    dann_cfg = config["dann"]
+    output_dir = Path(output_dir)
+    ckpt_dir = ensure_dir(output_dir / "checkpoints")
+    log_dir = ensure_dir(output_dir / "logs")
+    backup_dir = _checkpoint_backup_dir(config)
+    if backup_dir is not None:
+        ensure_dir(backup_dir)
+        print(f"Checkpoint backup enabled: {backup_dir}")
+
+    model = DANNModel(
+        backbone=model_cfg["backbone"],
+        num_classes=int(model_cfg["num_classes"]),
+        num_domains=int(model_cfg["num_domains"]),
+        dropout=float(model_cfg["dropout"]),
+    ).to(device)
+
+    source_loader = DataLoader(
+        source_train_dataset,
+        batch_size=int(train_cfg["source_batch_size"]),
+        shuffle=True,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+    target_loader = DataLoader(
+        target_dataset,
+        batch_size=int(train_cfg["target_batch_size"]),
+        shuffle=True,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+    val_loader = DataLoader(
+        source_val_dataset,
+        batch_size=int(train_cfg["source_batch_size"]),
+        shuffle=False,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+
+    source_labels = _dataset_labels(source_train_dataset)
+    class_weights = compute_class_weights(source_labels).to(device) if train_cfg.get("use_class_weights", True) else None
+    if train_cfg.get("source_loss", "weighted_ce") == "focal":
+        cls_loss_fn = FocalLoss(weight=class_weights, gamma=float(train_cfg.get("focal_gamma", 2.0)))
+    else:
+        cls_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+    domain_loss_fn = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(train_cfg["lr"]),
+        weight_decay=float(train_cfg["weight_decay"]),
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3)
+
+    total_epochs = int(train_cfg["epochs"])
+    steps_per_epoch = max(len(source_loader), len(target_loader))
+    total_steps = total_epochs * steps_per_epoch
+    best_f1 = -1.0
+    best_epoch = -1
+    stale_epochs = 0
+    patience = int(train_cfg["early_stopping_patience"])
+    history = []
+    global_step = 0
+    best_path = ckpt_dir / "dann_best.pt"
+    latest_path = ckpt_dir / "dann_latest.pt"
+
+    for epoch in range(1, total_epochs + 1):
+        model.train()
+        losses_total = []
+        losses_cls = []
+        losses_domain = []
+        source_true = []
+        source_pred = []
+        domain_true = []
+        domain_pred = []
+        source_iter = cycle(source_loader) if len(source_loader) < steps_per_epoch else iter(source_loader)
+        target_iter = cycle(target_loader) if len(target_loader) < steps_per_epoch else iter(target_loader)
+
+        progress = tqdm(range(steps_per_epoch), desc=f"dann epoch {epoch}/{total_epochs}", leave=True, dynamic_ncols=True, mininterval=1.0)
+        for _ in progress:
+            global_step += 1
+            lambd = dann_lambda(global_step, total_steps, dann_cfg)
+            x_s, y_s = next(source_iter)[:2]
+            x_t = next(target_iter)[0]
+            x_s = x_s.to(device, non_blocking=True)
+            y_s = y_s.to(device, non_blocking=True)
+            x_t = x_t.to(device, non_blocking=True)
+
+            x_domain = torch.cat([x_s, x_t], dim=0)
+            y_domain = torch.cat([
+                torch.zeros(x_s.shape[0], dtype=torch.long),
+                torch.ones(x_t.shape[0], dtype=torch.long),
+            ]).to(device)
+
+            optimizer.zero_grad(set_to_none=True)
+            class_logits = model(x_s)
+            domain_logits = model.forward_domain(x_domain, lambd)
+            loss_cls = cls_loss_fn(class_logits, y_s)
+            loss_domain = domain_loss_fn(domain_logits, y_domain)
+            loss = loss_cls + float(dann_cfg["alpha"]) * loss_domain
+            loss.backward()
+            optimizer.step()
+
+            losses_total.append(float(loss.detach().cpu()))
+            losses_cls.append(float(loss_cls.detach().cpu()))
+            losses_domain.append(float(loss_domain.detach().cpu()))
+            source_true.append(y_s.detach().cpu().numpy())
+            source_pred.append(class_logits.argmax(dim=1).detach().cpu().numpy())
+            domain_true.append(y_domain.detach().cpu().numpy())
+            domain_pred.append(domain_logits.argmax(dim=1).detach().cpu().numpy())
+            progress.set_postfix(loss=f"{losses_total[-1]:.4f}", cls=f"{losses_cls[-1]:.4f}", dom=f"{losses_domain[-1]:.4f}", lam=f"{lambd:.3f}", refresh=False)
+
+        train_metrics = classification_metrics(np.concatenate(source_true), np.concatenate(source_pred))
+        domain_acc = float((np.concatenate(domain_true) == np.concatenate(domain_pred)).mean())
+        val_result = predict_model(model, val_loader, device, desc=f"dann val epoch {epoch}")
+        val_metrics = val_result["metrics"]
+        scheduler.step(val_metrics["macro_f1"])
+
+        row = {
+            "epoch": epoch,
+            "loss": float(np.mean(losses_total)),
+            "loss_cls": float(np.mean(losses_cls)),
+            "loss_domain": float(np.mean(losses_domain)),
+            "source_train_accuracy": train_metrics["accuracy"],
+            "source_train_macro_f1": train_metrics["macro_f1"],
+            "source_val_accuracy": val_metrics["accuracy"],
+            "source_val_macro_f1": val_metrics["macro_f1"],
+            "domain_accuracy": domain_acc,
+            "lr": optimizer.param_groups[0]["lr"],
+            "lambda": dann_lambda(global_step, total_steps, dann_cfg),
+        }
+        history.append(row)
+        print(
+            f"dann epoch {epoch}/{total_epochs}: loss={row['loss']:.4f}, "
+            f"cls={row['loss_cls']:.4f}, dom={row['loss_domain']:.4f}, "
+            f"val_f1={row['source_val_macro_f1']:.4f}, domain_acc={row['domain_accuracy']:.4f}",
+            flush=True,
+        )
+
+        if val_metrics["macro_f1"] > best_f1:
+            best_f1 = val_metrics["macro_f1"]
+            best_epoch = epoch
+            stale_epochs = 0
+            _save_checkpoint(_payload(model, optimizer, scheduler, config, epoch, best_f1, best_epoch, stale_epochs, history), best_path, backup_dir)
+        else:
+            stale_epochs += 1
+
+        _save_checkpoint(_payload(model, optimizer, scheduler, config, epoch, best_f1, best_epoch, stale_epochs, history), latest_path, backup_dir)
+        if stale_epochs >= patience:
+            break
+
+    _write_history_csv(history, log_dir / "dann_train_log.csv")
+    if backup_dir is not None:
+        _copy_to_backup(log_dir / "dann_train_log.csv", backup_dir)
+    return {
+        "best_checkpoint": str(best_path),
+        "latest_checkpoint": str(latest_path),
+        "checkpoint_backup_dir": str(backup_dir) if backup_dir is not None else None,
+        "best_epoch": best_epoch,
+        "best_source_val_macro_f1": best_f1,
+        "history": history,
+    }
+
+
+def dann_lambda(step: int, total_steps: int, config: dict[str, Any]) -> float:
+    if config.get("lambda_schedule") == "fixed":
+        return float(config.get("fixed_lambda", 1.0))
+    p = min(max(step / max(total_steps, 1), 0.0), 1.0)
+    gamma = float(config.get("gamma", 10.0))
+    return float(2.0 / (1.0 + math.exp(-gamma * p)) - 1.0)
+
+
+class FocalLoss(torch.nn.Module):
+    def __init__(self, weight: torch.Tensor | None = None, gamma: float = 2.0):
+        super().__init__()
+        self.register_buffer("weight", weight if weight is not None else None)
+        self.gamma = gamma
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        ce = torch.nn.functional.cross_entropy(logits, target, weight=self.weight, reduction="none")
+        pt = torch.exp(-ce)
+        return ((1.0 - pt) ** self.gamma * ce).mean()
+
+
+def load_dann_from_checkpoint(checkpoint_path: str | Path, device: torch.device):
+    checkpoint_path = Path(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model_cfg = checkpoint["config"]["model"]
+    model = DANNModel(
+        backbone=model_cfg["backbone"],
+        num_classes=int(model_cfg["num_classes"]),
+        num_domains=int(model_cfg["num_domains"]),
+        dropout=float(model_cfg["dropout"]),
+    ).to(device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    print(
+        "Loaded DANN checkpoint:",
+        {
+            "path": str(checkpoint_path),
+            "epoch": checkpoint.get("epoch"),
+            "best_epoch": checkpoint.get("best_epoch"),
+            "best_metric": checkpoint.get("best_metric"),
+            "fingerprint": checkpoint.get("model_state_fingerprint"),
+        },
+    )
+    return model, checkpoint
+
+
+def _dataset_labels(dataset) -> np.ndarray:
+    if hasattr(dataset, "indices") and hasattr(dataset, "dataset"):
+        parent_labels = _dataset_labels(dataset.dataset)
+        return parent_labels[np.asarray(dataset.indices)]
+    return dataset.y
+
+
+def _payload(model, optimizer, scheduler, config, epoch, best_metric, best_epoch, stale_epochs, history):
+    return {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "model_name": "dann",
+        "backbone": config["model"]["backbone"],
+        "epoch": epoch,
+        "best_metric": best_metric,
+        "best_epoch": best_epoch,
+        "stale_epochs": stale_epochs,
+        "history": history,
+        "config": config,
+        "class_names": config["data"]["class_names"],
+        "model_state_fingerprint": _state_dict_fingerprint(model.state_dict()),
+    }
+
+
+def _save_checkpoint(payload, path: str | Path, backup_dir: Path | None = None) -> None:
+    path = Path(path)
+    ensure_dir(path.parent)
+    torch.save(payload, path)
+    print(
+        f"Saved checkpoint {path} "
+        f"(epoch={payload.get('epoch')}, best_epoch={payload.get('best_epoch')}, "
+        f"best_metric={payload.get('best_metric'):.6f}, fingerprint={payload.get('model_state_fingerprint')})"
+    )
+    if backup_dir is not None:
+        _copy_to_backup(path, backup_dir)
+
+
+def _write_history_csv(rows: list[dict[str, Any]], path: str | Path) -> None:
+    if not rows:
+        return
+    ensure_dir(Path(path).parent)
+    with Path(path).open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _copy_to_backup(path: str | Path, backup_dir: Path) -> None:
+    path = Path(path)
+    if path.exists():
+        ensure_dir(backup_dir)
+        shutil.copy2(path, backup_dir / path.name)
+
+
+def _checkpoint_backup_dir(config: dict[str, Any]) -> Path | None:
+    value = os.environ.get("ECG_PHASE2_CHECKPOINT_BACKUP_DIR") or config.get("paths", {}).get("checkpoint_backup_dir")
+    if value in (None, "", "null", "None"):
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return (Path(config.get("_base_dir", ".")) / path).resolve()
+
+
+def _state_dict_fingerprint(state_dict: dict[str, torch.Tensor]) -> str:
+    hasher = hashlib.sha256()
+    for key in sorted(state_dict.keys()):
+        tensor = state_dict[key].detach().cpu().contiguous()
+        hasher.update(key.encode("utf-8"))
+        hasher.update(str(tuple(tensor.shape)).encode("utf-8"))
+        hasher.update(str(tensor.dtype).encode("utf-8"))
+        hasher.update(tensor.numpy().tobytes())
+    return hasher.hexdigest()[:16]

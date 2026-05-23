@@ -6,9 +6,9 @@ from pathlib import Path
 
 import torch
 
-ECG_PHASE1_ROOT = Path(__file__).resolve().parents[1]
-if str(ECG_PHASE1_ROOT) not in sys.path:
-    sys.path.insert(0, str(ECG_PHASE1_ROOT))
+ECG_THESIS_ROOT = Path(__file__).resolve().parents[1]
+if str(ECG_THESIS_ROOT) not in sys.path:
+    sys.path.insert(0, str(ECG_THESIS_ROOT))
 
 from src.utils.io import load_config, resolve_path
 
