@@ -19,12 +19,7 @@ class DANNModel(nn.Module):
         self.backbone_name = backbone
         self.feature_extractor = build_model(backbone, num_classes=num_classes)
         embedding_dim = self._infer_embedding_dim()
-        self.label_classifier = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(embedding_dim, num_classes),
-        )
+        self.label_classifier = nn.Linear(embedding_dim, num_classes)
         self.grl = GradientReversalLayer()
         self.domain_classifier = nn.Sequential(
             nn.Linear(embedding_dim, embedding_dim),

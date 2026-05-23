@@ -229,6 +229,7 @@ def _load_source_initialization(model: DANNModel, config: dict[str, Any], device
     checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     missing, unexpected = model.feature_extractor.load_state_dict(state_dict, strict=False)
+    copied_classifier = _copy_source_classifier(model)
     print(
         "Initialized DANN feature extractor from source-only checkpoint:",
         {
@@ -237,8 +238,20 @@ def _load_source_initialization(model: DANNModel, config: dict[str, Any], device
             "best_epoch": checkpoint.get("best_epoch"),
             "missing_keys": len(missing),
             "unexpected_keys": len(unexpected),
+            "copied_classifier": copied_classifier,
         },
     )
+
+
+def _copy_source_classifier(model: DANNModel) -> bool:
+    source_classifier = getattr(model.feature_extractor, "classifier", None)
+    if source_classifier is None:
+        return False
+    try:
+        model.label_classifier.load_state_dict(source_classifier.state_dict())
+    except RuntimeError:
+        return False
+    return True
 
 
 class FocalLoss(torch.nn.Module):

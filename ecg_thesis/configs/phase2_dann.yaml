@@ -53,7 +53,7 @@ training:
   lr: 0.0003
   weight_decay: 0.0001
   optimizer: adamw
-  source_loss: focal
+  source_loss: weighted_ce
   focal_gamma: 2.0
   use_class_weights: true
   early_stopping_patience: 10
