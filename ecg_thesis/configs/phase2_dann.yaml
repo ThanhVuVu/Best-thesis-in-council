@@ -50,20 +50,22 @@ training:
   epochs: 50
   source_batch_size: 64
   target_batch_size: 64
-  lr: 0.001
+  lr: 0.0003
   weight_decay: 0.0001
   optimizer: adamw
-  source_loss: weighted_ce
+  source_loss: focal
   focal_gamma: 2.0
   use_class_weights: true
   early_stopping_patience: 10
   checkpoint_metric: source_val_macro_f1
 
 dann:
-  alpha: 1.0
+  alpha: 0.2
   lambda_schedule: progressive
-  gamma: 10.0
+  gamma: 3.0
   fixed_lambda: 1.0
+  warmup_epochs: 3
+  source_init_checkpoint: outputs/checkpoints/source_only_inception_best.pt
 
 evaluation:
   primary_metric: macro_f1

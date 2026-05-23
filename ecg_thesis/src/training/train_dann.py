@@ -46,6 +46,7 @@ def train_dann(
         num_domains=int(model_cfg["num_domains"]),
         dropout=float(model_cfg["dropout"]),
     ).to(device)
+    _load_source_initialization(model, config, device)
 
     source_loader = DataLoader(
         source_train_dataset,
@@ -111,6 +112,10 @@ def train_dann(
         for _ in progress:
             global_step += 1
             lambd = dann_lambda(global_step, total_steps, dann_cfg)
+            effective_alpha = float(dann_cfg["alpha"])
+            if epoch <= int(dann_cfg.get("warmup_epochs", 0)):
+                lambd = 0.0
+                effective_alpha = 0.0
             x_s, y_s = next(source_iter)[:2]
             x_t = next(target_iter)[0]
             x_s = x_s.to(device, non_blocking=True)
@@ -128,7 +133,7 @@ def train_dann(
             domain_logits = model.forward_domain(x_domain, lambd)
             loss_cls = cls_loss_fn(class_logits, y_s)
             loss_domain = domain_loss_fn(domain_logits, y_domain)
-            loss = loss_cls + float(dann_cfg["alpha"]) * loss_domain
+            loss = loss_cls + effective_alpha * loss_domain
             loss.backward()
             optimizer.step()
 
@@ -139,7 +144,14 @@ def train_dann(
             source_pred.append(class_logits.argmax(dim=1).detach().cpu().numpy())
             domain_true.append(y_domain.detach().cpu().numpy())
             domain_pred.append(domain_logits.argmax(dim=1).detach().cpu().numpy())
-            progress.set_postfix(loss=f"{losses_total[-1]:.4f}", cls=f"{losses_cls[-1]:.4f}", dom=f"{losses_domain[-1]:.4f}", lam=f"{lambd:.3f}", refresh=False)
+            progress.set_postfix(
+                loss=f"{losses_total[-1]:.4f}",
+                cls=f"{losses_cls[-1]:.4f}",
+                dom=f"{losses_domain[-1]:.4f}",
+                lam=f"{lambd:.3f}",
+                alpha=f"{effective_alpha:.2f}",
+                refresh=False,
+            )
 
         train_metrics = classification_metrics(np.concatenate(source_true), np.concatenate(source_pred))
         domain_acc = float((np.concatenate(domain_true) == np.concatenate(domain_pred)).mean())
@@ -159,6 +171,7 @@ def train_dann(
             "domain_accuracy": domain_acc,
             "lr": optimizer.param_groups[0]["lr"],
             "lambda": dann_lambda(global_step, total_steps, dann_cfg),
+            "alpha": 0.0 if epoch <= int(dann_cfg.get("warmup_epochs", 0)) else float(dann_cfg["alpha"]),
         }
         history.append(row)
         print(
@@ -199,6 +212,33 @@ def dann_lambda(step: int, total_steps: int, config: dict[str, Any]) -> float:
     p = min(max(step / max(total_steps, 1), 0.0), 1.0)
     gamma = float(config.get("gamma", 10.0))
     return float(2.0 / (1.0 + math.exp(-gamma * p)) - 1.0)
+
+
+def _load_source_initialization(model: DANNModel, config: dict[str, Any], device: torch.device) -> None:
+    checkpoint_value = config.get("dann", {}).get("source_init_checkpoint")
+    if checkpoint_value in (None, "", "null", "None"):
+        return
+
+    checkpoint_path = Path(checkpoint_value)
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = Path(config.get("_base_dir", ".")) / checkpoint_path
+    if not checkpoint_path.exists():
+        print(f"Source initialization checkpoint not found, training DANN from scratch: {checkpoint_path}")
+        return
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    missing, unexpected = model.feature_extractor.load_state_dict(state_dict, strict=False)
+    print(
+        "Initialized DANN feature extractor from source-only checkpoint:",
+        {
+            "path": str(checkpoint_path),
+            "epoch": checkpoint.get("epoch"),
+            "best_epoch": checkpoint.get("best_epoch"),
+            "missing_keys": len(missing),
+            "unexpected_keys": len(unexpected),
+        },
+    )
 
 
 class FocalLoss(torch.nn.Module):

@@ -17,11 +17,20 @@ def main() -> None:
     parser.add_argument("--max-source-samples", type=int, default=None)
     parser.add_argument("--max-target-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--alpha", type=float, default=None)
+    parser.add_argument("--warmup-epochs", type=int, default=None)
     args = parser.parse_args()
 
     config = load_phase1_config(args.config)
     if args.epochs is not None:
         config["training"]["epochs"] = int(args.epochs)
+    if args.lr is not None:
+        config["training"]["lr"] = float(args.lr)
+    if args.alpha is not None:
+        config["dann"]["alpha"] = float(args.alpha)
+    if args.warmup_epochs is not None:
+        config["dann"]["warmup_epochs"] = int(args.warmup_epochs)
     set_seed(int(config["seed"]))
     device = device_from_torch()
     print(f"Using device: {device}")
