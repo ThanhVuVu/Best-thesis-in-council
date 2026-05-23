@@ -36,7 +36,7 @@ def train_source_only(
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
     log_dir = ensure_dir(output_dir / "logs")
 
-    model = build_model(train_cfg["model"], num_classes=3).to(device)
+    model = build_model(train_cfg["model"], num_classes=3, **train_cfg.get("model_kwargs", {})).to(device)
     train_loader = DataLoader(
         train_dataset,
         batch_size=int(train_cfg["batch_size"]),
@@ -185,7 +185,7 @@ def train_source_only(
 def load_model_from_checkpoint(checkpoint_path: str | Path, device: torch.device):
     checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model = build_model(checkpoint["model_name"], num_classes=3).to(device)
+    model = build_model(checkpoint["model_name"], num_classes=3, **_checkpoint_model_kwargs(checkpoint)).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     fingerprint = checkpoint.get("model_state_fingerprint") or _state_dict_fingerprint(checkpoint["model_state_dict"])
     print(
@@ -200,6 +200,23 @@ def load_model_from_checkpoint(checkpoint_path: str | Path, device: torch.device
         },
     )
     return model, checkpoint
+
+
+def _checkpoint_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    config = checkpoint.get("config", {})
+    training_kwargs = config.get("training", {}).get("model_kwargs")
+    if training_kwargs:
+        return dict(training_kwargs)
+    model_cfg = config.get("model", {})
+    allowed = {
+        "d_model",
+        "num_heads",
+        "dff",
+        "num_transformer_layers",
+        "attention_reduction",
+        "dropout",
+    }
+    return {key: model_cfg[key] for key in allowed if key in model_cfg}
 
 
 def _dataset_labels(dataset) -> np.ndarray:

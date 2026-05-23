@@ -20,7 +20,7 @@ from src.visualization.plot_embeddings import plot_umap_embeddings
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/phase2_dann.yaml")
-    parser.add_argument("--source-checkpoint", default="outputs/checkpoints/source_only_inception_best.pt")
+    parser.add_argument("--source-checkpoint", default="outputs/checkpoints/source_only_catnet_best.pt")
     parser.add_argument("--dann-checkpoint", default="outputs/checkpoints/dann_best.pt")
     parser.add_argument("--max-points-per-domain", type=int, default=None)
     args = parser.parse_args()
@@ -43,7 +43,7 @@ def main() -> None:
         source_result["embeddings"],
         source_result["y_true"],
         domains,
-        figures_dir / "umap_source_only_inception.png",
+        figures_dir / "umap_source_only_catnet.png",
         seed=int(config["seed"]),
     )
 
@@ -101,7 +101,7 @@ def _plot_training_curves(csv_path: Path, output_path: Path) -> None:
 
 def _plot_per_class_f1(metrics_dir: Path, output_path: Path) -> None:
     metric_files = [
-        ("Source-only INCART", metrics_dir / "source_only_inception_incart_heldout_metrics.json"),
+        ("Source-only INCART", metrics_dir / "source_only_catnet_incart_heldout_metrics.json"),
         ("DANN INCART", metrics_dir / "dann_incart_heldout_metrics.json"),
     ]
     labels = []

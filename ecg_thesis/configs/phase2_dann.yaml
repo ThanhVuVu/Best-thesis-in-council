@@ -29,16 +29,21 @@ incart_split:
   ]
 
 model:
-  backbone: inceptiontime1d
+  backbone: catnet1d
   embedding_dim: 128
   num_classes: 3
   num_domains: 2
-  dropout: 0.3
+  dropout: 0.2
+  d_model: 128
+  num_heads: 4
+  dff: 128
+  num_transformer_layers: 1
+  attention_reduction: 8
 
 source_only:
   enabled: true
-  model: inceptiontime1d
-  checkpoint_prefix: source_only_inception
+  model: catnet1d
+  checkpoint_prefix: source_only_catnet
   epochs: 50
   batch_size: 64
   lr: 0.001
@@ -65,7 +70,7 @@ dann:
   gamma: 3.0
   fixed_lambda: 1.0
   warmup_epochs: 3
-  source_init_checkpoint: outputs/checkpoints/source_only_inception_best.pt
+  source_init_checkpoint: outputs/checkpoints/source_only_catnet_best.pt
 
 evaluation:
   primary_metric: macro_f1

@@ -45,6 +45,7 @@ def train_dann(
         num_classes=int(model_cfg["num_classes"]),
         num_domains=int(model_cfg["num_domains"]),
         dropout=float(model_cfg["dropout"]),
+        backbone_kwargs=_model_kwargs(model_cfg),
     ).to(device)
     _load_source_initialization(model, config, device)
 
@@ -275,6 +276,7 @@ def load_dann_from_checkpoint(checkpoint_path: str | Path, device: torch.device)
         num_classes=int(model_cfg["num_classes"]),
         num_domains=int(model_cfg["num_domains"]),
         dropout=float(model_cfg["dropout"]),
+        backbone_kwargs=_model_kwargs(model_cfg),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     print(
@@ -295,6 +297,18 @@ def _dataset_labels(dataset) -> np.ndarray:
         parent_labels = _dataset_labels(dataset.dataset)
         return parent_labels[np.asarray(dataset.indices)]
     return dataset.y
+
+
+def _model_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "d_model",
+        "num_heads",
+        "dff",
+        "num_transformer_layers",
+        "attention_reduction",
+        "dropout",
+    }
+    return {key: model_cfg[key] for key in allowed if key in model_cfg}
 
 
 def _payload(model, optimizer, scheduler, config, epoch, best_metric, best_epoch, stale_epochs, history):
