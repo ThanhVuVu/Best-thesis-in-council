@@ -221,10 +221,13 @@ __marimo__/
 mit-bih-arrhythmia-database-1.0.0/
 st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/
 data/raw/
+data/processed/
 outputs/
 ecg_phase1/data/processed/
 ecg_phase1/outputs/
+ecg_thesis/data/processed/
 ecg_thesis/outputs/
+*.npz
 *.pt
 *.pth
 *.ckpt
