@@ -224,9 +224,7 @@ data/raw/
 outputs/
 ecg_phase1/data/processed/
 ecg_phase1/outputs/
-ecg_thesis/data/processed/
 ecg_thesis/outputs/
-*.npz
 *.pt
 *.pth
 *.ckpt
