@@ -35,6 +35,27 @@ class ECGBeatDataset(Dataset):
         return self.data["record"]
 
 
+class ECGBeatRRDataset(ECGBeatDataset):
+    def __init__(self, npz_path: str | Path, return_metadata: bool = False):
+        super().__init__(npz_path, return_metadata=return_metadata)
+        if "rr_features" not in self.data:
+            raise KeyError(f"{self.path} does not contain rr_features. Run scripts/phase3/02_prepare_rr_features.py first.")
+        self.rr_features = self.data["rr_features"].astype(np.float32)
+        if len(self.rr_features) != len(self.y):
+            raise ValueError(
+                f"rr_features length mismatch in {self.path}: "
+                f"{len(self.rr_features)} rr rows vs {len(self.y)} labels"
+            )
+
+    def __getitem__(self, idx: int):
+        x = torch.from_numpy(self.x[idx])
+        rr = torch.from_numpy(self.rr_features[idx])
+        y = torch.tensor(self.y[idx], dtype=torch.long)
+        if not self.return_metadata:
+            return x, rr, y
+        return x, rr, y, self.metadata(idx)
+
+
 def subset_by_records(dataset: ECGBeatDataset, records: list[str]) -> Subset:
     wanted = set(records)
     indices = [i for i, rec in enumerate(dataset.records) if str(rec) in wanted]

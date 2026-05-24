@@ -96,11 +96,11 @@ def train_source_only(
             dynamic_ncols=True,
             mininterval=1.0,
         )
-        for x, y in batch_bar:
-            x = x.to(device)
+        for batch in batch_bar:
+            inputs, y = _supervised_batch_to_device(batch, device)
             y = y.to(device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(x)
+            logits = model(*inputs)
             loss = criterion(logits, y)
             loss.backward()
             optimizer.step()
@@ -169,9 +169,10 @@ def train_source_only(
         if should_stop:
             break
 
-    _write_history_csv(history, log_dir / "train_log.csv")
+    train_log_name = f"{checkpoint_prefix}_train_log.csv" if checkpoint_prefix else "train_log.csv"
+    _write_history_csv(history, log_dir / train_log_name)
     if backup_dir is not None:
-        _copy_to_backup(log_dir / "train_log.csv", backup_dir)
+        _copy_to_backup(log_dir / train_log_name, backup_dir)
     return {
         "best_checkpoint": str(best_path),
         "latest_checkpoint": str(latest_path),
@@ -215,6 +216,8 @@ def _checkpoint_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
         "num_transformer_layers",
         "attention_reduction",
         "dropout",
+        "rr_feature_dim",
+        "rr_embedding_dim",
     }
     return {key: model_cfg[key] for key in allowed if key in model_cfg}
 
@@ -224,6 +227,19 @@ def _dataset_labels(dataset) -> np.ndarray:
         parent_labels = _dataset_labels(dataset.dataset)
         return parent_labels[np.asarray(dataset.indices)]
     return dataset.y
+
+
+def _supervised_batch_to_device(batch, device: torch.device) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+    if len(batch) == 2:
+        x, y = batch
+        return (x.to(device, non_blocking=True),), y.to(device, non_blocking=True)
+    if len(batch) == 3:
+        x, rr, y = batch
+        return (x.to(device, non_blocking=True), rr.to(device, non_blocking=True)), y.to(device, non_blocking=True)
+    if len(batch) == 4:
+        x, rr, y, _meta = batch
+        return (x.to(device, non_blocking=True), rr.to(device, non_blocking=True)), y.to(device, non_blocking=True)
+    raise ValueError(f"Unsupported supervised batch length: {len(batch)}")
 
 
 def _write_history_csv(rows: list[dict[str, Any]], path: str | Path) -> None:

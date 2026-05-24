@@ -23,7 +23,7 @@ def main() -> None:
     device = device_from_torch()
     print(f"Using device: {device}")
     checkpoint_path = cfg_path({"paths": {"checkpoint": args.checkpoint}, "_base_dir": config["_base_dir"]}, "paths", "checkpoint")
-    model, _ = load_model_from_checkpoint(checkpoint_path, device)
+    model, checkpoint = load_model_from_checkpoint(checkpoint_path, device)
     processed = cfg_path(config, "paths", "processed_dir")
     figures = ensure_dir(cfg_path(config, "paths", "output_dir") / "figures")
 
@@ -51,6 +51,7 @@ def main() -> None:
         domains,
         figures / "embedding_umap.png",
         seed=int(config["seed"]),
+        title=f"{_display_model_name(checkpoint)} embeddings",
     )
     print(f"Saved figures to {figures}")
 
@@ -66,6 +67,17 @@ def _balanced_subset(datasets, max_points_per_domain: int, seed: int):
         indices = rng.choice(np.arange(n), size=size, replace=False).tolist()
         subsets.append(Subset(ds, indices))
     return ConcatDataset(subsets)
+
+
+def _display_model_name(checkpoint: dict) -> str:
+    names = {
+        "resnet1d": "ResNet1D",
+        "simple_cnn": "SimpleCNN1D",
+        "inceptiontime1d": "InceptionTime1D",
+        "catnet1d": "CATNet1D",
+        "dann": "DANN",
+    }
+    return names.get(str(checkpoint.get("model_name", "model")).lower(), "Model")
 
 
 if __name__ == "__main__":

@@ -94,8 +94,9 @@ def train_dann(
     patience = int(train_cfg["early_stopping_patience"])
     history = []
     global_step = 0
-    best_path = ckpt_dir / "dann_best.pt"
-    latest_path = ckpt_dir / "dann_latest.pt"
+    checkpoint_prefix = train_cfg.get("checkpoint_prefix", "dann")
+    best_path = ckpt_dir / f"{checkpoint_prefix}_best.pt"
+    latest_path = ckpt_dir / f"{checkpoint_prefix}_latest.pt"
 
     for epoch in range(1, total_epochs + 1):
         model.train()
@@ -117,21 +118,17 @@ def train_dann(
             if epoch <= int(dann_cfg.get("warmup_epochs", 0)):
                 lambd = 0.0
                 effective_alpha = 0.0
-            x_s, y_s = next(source_iter)[:2]
-            x_t = next(target_iter)[0]
-            x_s = x_s.to(device, non_blocking=True)
-            y_s = y_s.to(device, non_blocking=True)
-            x_t = x_t.to(device, non_blocking=True)
-
-            x_domain = torch.cat([x_s, x_t], dim=0)
+            source_inputs, y_s = _source_batch_to_device(next(source_iter), device)
+            target_inputs = _target_batch_to_device(next(target_iter), device)
+            domain_inputs = tuple(torch.cat([src, tgt], dim=0) for src, tgt in zip(source_inputs, target_inputs))
             y_domain = torch.cat([
-                torch.zeros(x_s.shape[0], dtype=torch.long),
-                torch.ones(x_t.shape[0], dtype=torch.long),
+                torch.zeros(source_inputs[0].shape[0], dtype=torch.long),
+                torch.ones(target_inputs[0].shape[0], dtype=torch.long),
             ]).to(device)
 
             optimizer.zero_grad(set_to_none=True)
-            class_logits = model(x_s)
-            domain_logits = model.forward_domain(x_domain, lambd)
+            class_logits = model(*source_inputs)
+            domain_logits = model.forward_domain(*domain_inputs, lambd=lambd)
             loss_cls = cls_loss_fn(class_logits, y_s)
             loss_domain = domain_loss_fn(domain_logits, y_domain)
             loss = loss_cls + effective_alpha * loss_domain
@@ -194,9 +191,10 @@ def train_dann(
         if stale_epochs >= patience:
             break
 
-    _write_history_csv(history, log_dir / "dann_train_log.csv")
+    train_log_name = f"{checkpoint_prefix}_train_log.csv"
+    _write_history_csv(history, log_dir / train_log_name)
     if backup_dir is not None:
-        _copy_to_backup(log_dir / "dann_train_log.csv", backup_dir)
+        _copy_to_backup(log_dir / train_log_name, backup_dir)
     return {
         "best_checkpoint": str(best_path),
         "latest_checkpoint": str(latest_path),
@@ -307,8 +305,36 @@ def _model_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
         "num_transformer_layers",
         "attention_reduction",
         "dropout",
+        "rr_feature_dim",
+        "rr_embedding_dim",
     }
     return {key: model_cfg[key] for key in allowed if key in model_cfg}
+
+
+def _source_batch_to_device(batch, device: torch.device) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+    if len(batch) == 2:
+        x, y = batch
+        return (x.to(device, non_blocking=True),), y.to(device, non_blocking=True)
+    if len(batch) == 3:
+        x, rr, y = batch
+        return (x.to(device, non_blocking=True), rr.to(device, non_blocking=True)), y.to(device, non_blocking=True)
+    if len(batch) == 4:
+        x, rr, y, _meta = batch
+        return (x.to(device, non_blocking=True), rr.to(device, non_blocking=True)), y.to(device, non_blocking=True)
+    raise ValueError(f"Unsupported source batch length: {len(batch)}")
+
+
+def _target_batch_to_device(batch, device: torch.device) -> tuple[torch.Tensor, ...]:
+    if len(batch) == 2:
+        x, _y = batch
+        return (x.to(device, non_blocking=True),)
+    if len(batch) == 3:
+        x, rr, _y = batch
+        return (x.to(device, non_blocking=True), rr.to(device, non_blocking=True))
+    if len(batch) == 4:
+        x, rr, _y, _meta = batch
+        return (x.to(device, non_blocking=True), rr.to(device, non_blocking=True))
+    raise ValueError(f"Unsupported target batch length: {len(batch)}")
 
 
 def _payload(model, optimizer, scheduler, config, epoch, best_metric, best_epoch, stale_epochs, history):

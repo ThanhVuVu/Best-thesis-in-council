@@ -1,0 +1,79 @@
+seed: 42
+
+paths:
+  processed_dir: data/processed
+  output_dir: outputs
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/mitbih_train.npz
+  source_test: data/processed/mitbih_test.npz
+  target_unlabeled: data/processed/incart_unlabeled.npz
+  target_test: data/processed/incart_test_heldout.npz
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  rr_feature_names: ["rr_prev", "rr_next", "rr_ratio", "rr_prev_next_ratio"]
+
+model:
+  backbone: catnet_rr1d
+  waveform_embedding_dim: 128
+  rr_feature_dim: 4
+  rr_embedding_dim: 32
+  embedding_dim: 128
+  num_classes: 3
+  num_domains: 2
+  dropout: 0.2
+  d_model: 128
+  num_heads: 4
+  dff: 128
+  num_transformer_layers: 1
+  attention_reduction: 8
+
+source_only:
+  enabled: true
+  model: catnet_rr1d
+  checkpoint_prefix: source_only_catnet_rr
+  epochs: 50
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  use_class_weights: true
+  early_stopping_patience: 10
+
+training:
+  checkpoint_prefix: dann_rr
+  epochs: 50
+  source_batch_size: 64
+  target_batch_size: 64
+  lr: 0.0003
+  weight_decay: 0.0001
+  optimizer: adamw
+  source_loss: weighted_ce
+  focal_gamma: 2.0
+  use_class_weights: true
+  early_stopping_patience: 10
+  checkpoint_metric: source_val_macro_f1
+
+dann:
+  alpha: 0.2
+  lambda_schedule: progressive
+  gamma: 3.0
+  fixed_lambda: 1.0
+  warmup_epochs: 3
+  source_init_checkpoint: outputs/checkpoints/source_only_catnet_rr_best.pt
+
+evaluation:
+  primary_metric: macro_f1
+  save_predictions: true
+  save_confusion_matrix: true
+  focus_classes: ["S", "V"]
+
+visualization:
+  embedding_method: umap
+  max_points_per_domain: 3000
+
+prototype_alignment:
+  enabled: false
+  confidence_threshold: 0.9
+  loss_weight: 0.05
+  warmup_epochs: 5

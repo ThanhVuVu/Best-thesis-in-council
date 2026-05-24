@@ -30,24 +30,32 @@ def predict_model(
 
     progress = tqdm(loader, desc=desc, leave=True, dynamic_ncols=True, mininterval=1.0)
     for batch in progress:
-        if len(batch) == 3:
+        if len(batch) == 3 and isinstance(batch[2], dict):
             x, y, meta = batch
             metadata.extend(_batch_metadata_to_rows(meta))
+            inputs = (x.to(device, non_blocking=True),)
+        elif len(batch) == 4:
+            x, rr, y, meta = batch
+            metadata.extend(_batch_metadata_to_rows(meta))
+            inputs = (x.to(device, non_blocking=True), rr.to(device, non_blocking=True))
+        elif len(batch) == 3:
+            x, rr, y = batch
+            inputs = (x.to(device, non_blocking=True), rr.to(device, non_blocking=True))
         else:
             x, y = batch
-        x = x.to(device, non_blocking=True)
+            inputs = (x.to(device, non_blocking=True),)
         y = y.to(device, non_blocking=True)
         if collect_embeddings:
-            logits, emb = model(x, return_embedding=True)
+            logits, emb = model(*inputs, return_embedding=True)
             embeddings.append(emb.detach().cpu().numpy())
         else:
-            logits = model(x)
+            logits = model(*inputs)
         p = torch.softmax(logits, dim=1)
         pred = p.argmax(dim=1)
         y_true.append(y.detach().cpu().numpy())
         y_pred.append(pred.detach().cpu().numpy())
         probs.append(p.detach().cpu().numpy())
-        progress.set_postfix(batch_size=int(x.shape[0]), device=str(x.device), refresh=False)
+        progress.set_postfix(batch_size=int(inputs[0].shape[0]), device=str(inputs[0].device), refresh=False)
 
     result = {
         "y_true": np.concatenate(y_true),

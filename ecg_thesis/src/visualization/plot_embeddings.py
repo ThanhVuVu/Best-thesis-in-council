@@ -21,6 +21,7 @@ def plot_umap_embeddings(
     domains: list[str],
     output_path: str | Path,
     seed: int = 42,
+    title: str | None = None,
 ) -> None:
     if UMAP is not None:
         coords = UMAP(n_components=2, random_state=seed).fit_transform(embeddings)
@@ -50,7 +51,7 @@ def plot_umap_embeddings(
                 label=f"{domain}-{class_name}",
             )
     plt.legend(markerscale=2, fontsize=8)
-    plt.title(f"ResNet1D embeddings ({method})")
+    plt.title(title or f"Embeddings ({method})")
     plt.xlabel(f"{method}-1")
     plt.ylabel(f"{method}-2")
     plt.tight_layout()
