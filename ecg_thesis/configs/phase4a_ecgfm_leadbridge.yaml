@@ -1,0 +1,83 @@
+seed: 42
+
+paths:
+  mitbih_raw_dir: ../mit-bih-arrhythmia-database-1.0.0/mit-bih-arrhythmia-database-1.0.0
+  incart_raw_dir: ../st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/files
+  processed_dir: data/processed/phase4a
+  output_dir: outputs
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/phase4a/mitbih_train_5s.npz
+  source_test: data/processed/phase4a/mitbih_test_5s.npz
+  target_unlabeled: data/processed/phase4a/incart_unlabeled_5s.npz
+  target_test: data/processed/phase4a/incart_test_heldout_5s.npz
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  target_fs: 500
+  window_seconds: 5.0
+  window_samples: 2500
+  normalize: window_zscore
+  bandpass:
+    enabled: true
+    low_hz: 0.5
+    high_hz: 40.0
+    order: 4
+
+lead_selection:
+  preferred_leads:
+    mitbih: ["MLII", "II"]
+    incart: ["II", "MLII"]
+  fallback_lead_index: 0
+
+incart_split:
+  adapt_records: [
+    "I01", "I02", "I03", "I04", "I05", "I06", "I07", "I08", "I09", "I10",
+    "I11", "I12", "I13", "I14", "I15", "I16", "I17", "I18", "I19", "I20",
+    "I21", "I22", "I23", "I24", "I25", "I26", "I27", "I28", "I29", "I30",
+    "I31", "I32", "I33", "I34", "I35", "I36", "I37", "I38", "I39", "I40",
+    "I41", "I42", "I43", "I44", "I45", "I46", "I47", "I48", "I49", "I50"
+  ]
+  test_records: [
+    "I51", "I52", "I53", "I54", "I55", "I56", "I57", "I58", "I59", "I60",
+    "I61", "I62", "I63", "I64", "I65", "I66", "I67", "I68", "I69", "I70",
+    "I71", "I72", "I73", "I74", "I75"
+  ]
+
+ecgfm:
+  fairseq_signals_path: /kaggle/input/fairseq-signals/fairseq-signals
+  checkpoint_path: /kaggle/input/ecg-fm-weights/mimic_iv_ecg_finetuned.pt
+  frozen: true
+  hidden_dim: 768
+
+model:
+  backbone: ecgfm_leadbridge
+  num_classes: 3
+  input_leads: 1
+  bridge_out_leads: 12
+  bridge_hidden_channels: 64
+  hidden_dim: 768
+  head_hidden_dim: 256
+  dropout: 0.0
+  ecgfm_checkpoint_path: /kaggle/input/ecg-fm-weights/mimic_iv_ecg_finetuned.pt
+  fairseq_signals_path: /kaggle/input/fairseq-signals/fairseq-signals
+  freeze_ecgfm: true
+
+source_only:
+  enabled: true
+  model: ecgfm_leadbridge
+  checkpoint_prefix: source_only_ecgfm_leadbridge
+  epochs: 30
+  batch_size: 16
+  lr: 0.001
+  weight_decay: 0.0001
+  source_loss: focal
+  focal_gamma: 2.0
+  use_class_weights: true
+  early_stopping_patience: 10
+
+evaluation:
+  primary_metric: macro_f1
+  save_predictions: true
+  save_confusion_matrix: true
+  focus_classes: ["S", "V"]

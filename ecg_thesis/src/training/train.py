@@ -57,7 +57,10 @@ def train_source_only(
         class_weights = compute_class_weights(labels).to(device)
     else:
         class_weights = None
-    criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+    if train_cfg.get("source_loss", "weighted_ce") == "focal":
+        criterion = FocalLoss(weight=class_weights, gamma=float(train_cfg.get("focal_gamma", 2.0)))
+    else:
+        criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(train_cfg["lr"]),
@@ -183,10 +186,13 @@ def train_source_only(
     }
 
 
-def load_model_from_checkpoint(checkpoint_path: str | Path, device: torch.device):
+def load_model_from_checkpoint(checkpoint_path: str | Path, device: torch.device, model_kwargs_override: dict[str, Any] | None = None):
     checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model = build_model(checkpoint["model_name"], num_classes=3, **_checkpoint_model_kwargs(checkpoint)).to(device)
+    model_kwargs = _checkpoint_model_kwargs(checkpoint)
+    if model_kwargs_override:
+        model_kwargs.update({key: value for key, value in model_kwargs_override.items() if value is not None})
+    model = build_model(checkpoint["model_name"], num_classes=3, **model_kwargs).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     fingerprint = checkpoint.get("model_state_fingerprint") or _state_dict_fingerprint(checkpoint["model_state_dict"])
     print(
@@ -218,6 +224,14 @@ def _checkpoint_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
         "dropout",
         "rr_feature_dim",
         "rr_embedding_dim",
+        "input_leads",
+        "bridge_out_leads",
+        "bridge_hidden_channels",
+        "hidden_dim",
+        "head_hidden_dim",
+        "ecgfm_checkpoint_path",
+        "fairseq_signals_path",
+        "freeze_ecgfm",
     }
     return {key: model_cfg[key] for key in allowed if key in model_cfg}
 
@@ -227,6 +241,18 @@ def _dataset_labels(dataset) -> np.ndarray:
         parent_labels = _dataset_labels(dataset.dataset)
         return parent_labels[np.asarray(dataset.indices)]
     return dataset.y
+
+
+class FocalLoss(torch.nn.Module):
+    def __init__(self, weight: torch.Tensor | None = None, gamma: float = 2.0):
+        super().__init__()
+        self.register_buffer("weight", weight if weight is not None else None)
+        self.gamma = gamma
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        ce = torch.nn.functional.cross_entropy(logits, target, weight=self.weight, reduction="none")
+        pt = torch.exp(-ce)
+        return ((1.0 - pt) ** self.gamma * ce).mean()
 
 
 def _supervised_batch_to_device(batch, device: torch.device) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:

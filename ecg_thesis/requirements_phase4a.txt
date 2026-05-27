@@ -1,0 +1,5 @@
+# Phase 4A uses ECG-FM through a Kaggle input copy of fairseq-signals.
+# Install fairseq-signals itself from the attached repository, for example:
+#   pip install -e /kaggle/input/fairseq-signals/fairseq-signals
+huggingface-hub
+ecg-transform==0.1.3
