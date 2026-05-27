@@ -77,6 +77,9 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+notebooks/
+ecg_thesis/notebooks/
+\ecg_thesis\notebooks
 
 # IPython
 profile_default/
