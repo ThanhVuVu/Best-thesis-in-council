@@ -62,16 +62,25 @@ class ECGFMEncoderWrapper(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.ecgfm(source=x)
         if isinstance(out, dict):
-            if "encoder_out" not in out:
+            features = None
+            for key in ("encoder_out", "x", "features"):
+                if key in out and torch.is_tensor(out[key]):
+                    features = out[key]
+                    break
+            if features is None:
                 keys = ", ".join(sorted(out.keys()))
-                raise KeyError(f"ECG-FM output does not contain encoder_out. Available keys: {keys}")
-            features = out["encoder_out"]
+                raise KeyError(
+                    "ECG-FM output does not contain a supported feature tensor "
+                    f"(encoder_out, x, or features). Available keys: {keys}"
+                )
         else:
             features = out
         if not torch.is_tensor(features):
             raise TypeError(f"Expected ECG-FM encoder output tensor, got {type(features)!r}")
         if features.dim() != 3:
             raise ValueError(f"Expected ECG-FM encoder output [B, T, D], got shape {tuple(features.shape)}")
+        if features.shape[0] != x.shape[0] and features.shape[1] == x.shape[0]:
+            features = features.transpose(0, 1)
         return features
 
     @staticmethod
