@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+from inspect import Parameter, signature
 from pathlib import Path
+from typing import Any
 
 import torch
 from torch import nn
@@ -60,7 +62,7 @@ class ECGFMEncoderWrapper(nn.Module):
         return self
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.ecgfm(source=x)
+        out = _forward_ecgfm_features(self.ecgfm, x)
         if isinstance(out, dict):
             features = None
             for key in ("encoder_out", "x", "features"):
@@ -103,7 +105,37 @@ class ECGFMEncoderWrapper(nn.Module):
                 "Could not import fairseq_signals. Attach/install fairseq-signals and set "
                 "model.fairseq_signals_path to its repository path."
             ) from exc
-        return build_model_from_checkpoint(checkpoint_path=str(checkpoint))
+        checkpoint_obj = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        state_dict = _extract_fairseq_state_dict(checkpoint_obj)
+        model_cfg = _extract_fairseq_model_cfg(checkpoint_obj)
+        print(
+            "Loading ECG-FM checkpoint:",
+            {
+                "path": str(checkpoint),
+                "format": "fairseq" if isinstance(checkpoint_obj, dict) and "model" in checkpoint_obj else "state_dict",
+                "model_name": _cfg_get(model_cfg, "_name", default=_cfg_get(model_cfg, "arch")),
+                "num_tensors": len(state_dict),
+                "first_keys": list(state_dict.keys())[:5],
+            },
+            flush=True,
+        )
+        del checkpoint_obj, state_dict
+
+        try:
+            ecgfm = build_model_from_checkpoint(checkpoint_path=str(checkpoint))
+        except TypeError:
+            ecgfm = build_model_from_checkpoint(str(checkpoint))
+
+        if isinstance(ecgfm, dict):
+            raise TypeError(
+                "fairseq_signals returned a raw checkpoint/state_dict instead of an nn.Module. "
+                "This ECG-FM checkpoint stores weights under ckpt['model']; make sure the attached "
+                "fairseq-signals package provides fairseq_signals.models.build_model_from_checkpoint."
+            )
+        if not isinstance(ecgfm, nn.Module):
+            raise TypeError(f"Expected ECG-FM loader to return nn.Module, got {type(ecgfm)!r}")
+        ecgfm.eval()
+        return ecgfm
 
 
 class ECGFMLeadBridgeClassifier(nn.Module):
@@ -159,3 +191,52 @@ class ECGFMLeadBridgeClassifier(nn.Module):
         nonzero = features != 0
         denom = nonzero.sum(dim=1).clamp_min(1)
         return features.sum(dim=1) / denom
+
+
+def _extract_fairseq_state_dict(checkpoint_obj: Any) -> dict[str, torch.Tensor]:
+    if isinstance(checkpoint_obj, dict):
+        for key in ("model", "state_dict", "model_state_dict"):
+            value = checkpoint_obj.get(key)
+            if isinstance(value, dict) and all(torch.is_tensor(tensor) for tensor in value.values()):
+                return value
+        if checkpoint_obj and all(torch.is_tensor(tensor) for tensor in checkpoint_obj.values()):
+            return checkpoint_obj
+        keys = ", ".join(str(key) for key in checkpoint_obj.keys())
+        raise KeyError(
+            "Unsupported ECG-FM checkpoint dict. Expected weights under 'model', "
+            f"'state_dict', or 'model_state_dict'. Top-level keys: {keys}"
+        )
+    raise TypeError(f"Unsupported ECG-FM checkpoint object: {type(checkpoint_obj)!r}")
+
+
+def _extract_fairseq_model_cfg(checkpoint_obj: Any) -> Any:
+    if not isinstance(checkpoint_obj, dict):
+        return None
+    cfg = checkpoint_obj.get("cfg")
+    if cfg is None:
+        return None
+    return _cfg_get(cfg, "model")
+
+
+def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
+    if cfg is None:
+        return default
+    if isinstance(cfg, dict):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
+
+
+def _forward_ecgfm_features(ecgfm: nn.Module, source: torch.Tensor) -> Any:
+    kwargs: dict[str, Any] = {"source": source}
+    params = signature(ecgfm.forward).parameters
+    has_var_kwargs = any(param.kind == Parameter.VAR_KEYWORD for param in params.values())
+    if "features_only" in params:
+        kwargs["features_only"] = True
+    if "mask" in params:
+        kwargs["mask"] = False
+    if "return_features" in params:
+        kwargs["return_features"] = True
+    if has_var_kwargs:
+        kwargs.setdefault("mask", False)
+        kwargs.setdefault("features_only", True)
+    return ecgfm(**kwargs)
