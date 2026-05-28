@@ -20,4 +20,8 @@ def build_model(name: str, num_classes: int = 3, **kwargs):
         return CATNetRR1D(num_classes=num_classes, **kwargs)
     if name == "ecgfm_leadbridge":
         return ECGFMLeadBridgeClassifier(num_classes=num_classes, **kwargs)
+    if name == "ecgfm_repeatbridge":
+        return ECGFMLeadBridgeClassifier(num_classes=num_classes, bridge_mode="repeat", **kwargs)
+    if name == "ecgfm_repeatinitbridge":
+        return ECGFMLeadBridgeClassifier(num_classes=num_classes, bridge_mode="repeat_init_trainable", **kwargs)
     raise ValueError(f"Unknown model: {name}")

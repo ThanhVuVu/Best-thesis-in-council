@@ -11,6 +11,7 @@ if str(ECG_THESIS_ROOT) not in sys.path:
     sys.path.insert(0, str(ECG_THESIS_ROOT))
 
 from src.utils.io import load_config, resolve_path
+from src.utils.wandb_logging import add_wandb_args, apply_wandb_overrides
 
 
 def config_arg_parser() -> argparse.ArgumentParser:

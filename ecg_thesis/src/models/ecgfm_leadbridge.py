@@ -34,6 +34,42 @@ class LeadBridge1To12(nn.Module):
                 nn.init.zeros_(module.bias)
 
 
+class RepeatLeadBridge1To12(nn.Module):
+    def __init__(self, input_leads: int = 1, output_leads: int = 12):
+        super().__init__()
+        self.input_leads = int(input_leads)
+        self.output_leads = int(output_leads)
+        if self.input_leads != 1:
+            raise ValueError(f"RepeatLeadBridge1To12 expects input_leads=1, got {input_leads}")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"Expected input [B, C, T], got shape {tuple(x.shape)}")
+        if x.shape[1] != self.input_leads:
+            raise ValueError(f"Expected {self.input_leads} input lead(s), got {x.shape[1]}")
+        return x.repeat(1, self.output_leads, 1)
+
+
+class RepeatInitTrainableLeadBridge1To12(nn.Module):
+    def __init__(self, input_leads: int = 1, output_leads: int = 12):
+        super().__init__()
+        self.input_leads = int(input_leads)
+        self.output_leads = int(output_leads)
+        if self.input_leads != 1:
+            raise ValueError(f"RepeatInitTrainableLeadBridge1To12 expects input_leads=1, got {input_leads}")
+        self.proj = nn.Conv1d(self.input_leads, self.output_leads, kernel_size=1)
+        self._init_as_repeat()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(x)
+
+    def _init_as_repeat(self) -> None:
+        with torch.no_grad():
+            self.proj.weight.fill_(1.0)
+            if self.proj.bias is not None:
+                self.proj.bias.zero_()
+
+
 class ECGFMEncoderWrapper(nn.Module):
     def __init__(
         self,
@@ -151,13 +187,31 @@ class ECGFMLeadBridgeClassifier(nn.Module):
         ecgfm_checkpoint_path: str | None = None,
         fairseq_signals_path: str | None = None,
         freeze_ecgfm: bool = True,
+        bridge_mode: str = "trainable",
     ):
         super().__init__()
-        self.lead_bridge = LeadBridge1To12(
-            input_leads=input_leads,
-            hidden_channels=bridge_hidden_channels,
-            output_leads=bridge_out_leads,
-        )
+        self.bridge_mode = bridge_mode
+        if bridge_mode == "trainable":
+            self.lead_bridge = LeadBridge1To12(
+                input_leads=input_leads,
+                hidden_channels=bridge_hidden_channels,
+                output_leads=bridge_out_leads,
+            )
+        elif bridge_mode == "repeat":
+            self.lead_bridge = RepeatLeadBridge1To12(
+                input_leads=input_leads,
+                output_leads=bridge_out_leads,
+            )
+        elif bridge_mode == "repeat_init_trainable":
+            self.lead_bridge = RepeatInitTrainableLeadBridge1To12(
+                input_leads=input_leads,
+                output_leads=bridge_out_leads,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported bridge_mode={bridge_mode!r}. "
+                "Expected 'trainable', 'repeat', or 'repeat_init_trainable'."
+            )
         self.encoder = ECGFMEncoderWrapper(
             checkpoint_path=ecgfm_checkpoint_path,
             fairseq_signals_path=fairseq_signals_path,

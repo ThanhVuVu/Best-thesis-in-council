@@ -9,10 +9,11 @@ from torch.utils.data import DataLoader
 from src.data.label_mapping import CLASS_NAMES, ID_TO_CLASS
 from src.training.evaluate import predict_model
 from src.utils.io import ensure_dir, write_json
+from src.utils.wandb_logging import log_eval_metrics
 from src.visualization.plot_confusion import plot_confusion_matrix
 
 
-def evaluate_and_save(model, dataset, device, output_dir: str | Path, dataset_name: str, setting: str) -> dict:
+def evaluate_and_save(model, dataset, device, output_dir: str | Path, dataset_name: str, setting: str, wandb_run=None) -> dict:
     output = Path(output_dir)
     loader = DataLoader(
         dataset,
@@ -35,6 +36,8 @@ def evaluate_and_save(model, dataset, device, output_dir: str | Path, dataset_na
         f"{dataset_name} confusion matrix",
     )
     save_predictions(result, predictions_dir / f"{dataset_name}_predictions.csv")
+    if wandb_run is not None:
+        log_eval_metrics(wandb_run, metrics, prefix=f"eval/{dataset_name}")
     print(metrics)
     return metrics
 

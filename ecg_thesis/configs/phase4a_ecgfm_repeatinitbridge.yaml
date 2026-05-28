@@ -1,0 +1,69 @@
+seed: 42
+
+paths:
+  mitbih_raw_dir: ../mit-bih-arrhythmia-database-1.0.0/mit-bih-arrhythmia-database-1.0.0
+  incart_raw_dir: ../st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/files
+  processed_dir: data/processed/phase4a
+  output_dir: outputs
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/phase4a/mitbih_train_5s.npz
+  source_test: data/processed/phase4a/mitbih_test_5s.npz
+  target_unlabeled: data/processed/phase4a/incart_unlabeled_5s.npz
+  target_test: data/processed/phase4a/incart_test_heldout_5s.npz
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  target_fs: 500
+  window_seconds: 5.0
+  window_samples: 2500
+  normalize: window_zscore
+  bandpass:
+    enabled: true
+    low_hz: 0.5
+    high_hz: 40.0
+    order: 4
+
+lead_selection:
+  preferred_leads:
+    mitbih: ["MLII", "II"]
+    incart: ["II", "MLII"]
+  fallback_lead_index: 0
+
+ecgfm:
+  fairseq_signals_path: /kaggle/input/fairseq-signals/fairseq-signals
+  checkpoint_path: /kaggle/input/ecg-fm-weights/mimic_iv_ecg_finetuned.pt
+  frozen: true
+  hidden_dim: 768
+
+model:
+  backbone: ecgfm_repeatinitbridge
+  num_classes: 3
+  input_leads: 1
+  bridge_out_leads: 12
+  bridge_hidden_channels: 64
+  hidden_dim: 768
+  head_hidden_dim: 256
+  dropout: 0.1
+  ecgfm_checkpoint_path: /kaggle/input/ecg-fm-weights/mimic_iv_ecg_finetuned.pt
+  fairseq_signals_path: /kaggle/input/fairseq-signals/fairseq-signals
+  freeze_ecgfm: true
+
+source_only:
+  enabled: true
+  model: ecgfm_repeatinitbridge
+  checkpoint_prefix: source_only_ecgfm_repeatinitbridge
+  epochs: 30
+  batch_size: 16
+  lr: 0.0001
+  weight_decay: 0.0001
+  source_loss: weighted_ce
+  focal_gamma: 2.0
+  use_class_weights: true
+  early_stopping_patience: 10
+
+evaluation:
+  primary_metric: macro_f1
+  save_predictions: true
+  save_confusion_matrix: true
+  focus_classes: ["S", "V"]

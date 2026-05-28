@@ -16,6 +16,7 @@ from src.models import build_model
 from src.training.evaluate import predict_model
 from src.training.metrics import classification_metrics
 from src.utils.io import ensure_dir
+from src.utils.wandb_logging import init_wandb, should_log_artifacts
 
 
 def compute_class_weights(labels: np.ndarray, num_classes: int = 3) -> torch.Tensor:
@@ -35,6 +36,13 @@ def train_source_only(
     output_dir = Path(output_dir)
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
     log_dir = ensure_dir(output_dir / "logs")
+    checkpoint_prefix = train_cfg.get("checkpoint_prefix", "")
+    wandb_run = init_wandb(
+        config,
+        job_type="train_source_only",
+        default_name=checkpoint_prefix or train_cfg["model"],
+        extra_config={"output_dir": str(output_dir), "device": str(device)},
+    )
 
     model = build_model(train_cfg["model"], num_classes=3, **train_cfg.get("model_kwargs", {})).to(device)
     train_loader = DataLoader(
@@ -73,7 +81,6 @@ def train_source_only(
     patience = int(train_cfg["early_stopping_patience"])
     stale_epochs = 0
     history = []
-    checkpoint_prefix = train_cfg.get("checkpoint_prefix", "")
     if checkpoint_prefix:
         best_path = ckpt_dir / f"{checkpoint_prefix}_best.pt"
         latest_path = ckpt_dir / f"{checkpoint_prefix}_latest.pt"
@@ -127,6 +134,7 @@ def train_source_only(
             "lr": optimizer.param_groups[0]["lr"],
         }
         history.append(row)
+        wandb_run.log({f"train/{key}": value for key, value in row.items() if key != "epoch"}, step=epoch)
         print(
             f"epoch {epoch}/{total_epochs}: "
             f"loss={row['loss']:.4f}, train_f1={row['train_macro_f1']:.4f}, "
@@ -176,6 +184,10 @@ def train_source_only(
     _write_history_csv(history, log_dir / train_log_name)
     if backup_dir is not None:
         _copy_to_backup(log_dir / train_log_name, backup_dir)
+    wandb_run.summary_update({"best_epoch": best_epoch, "best_val_macro_f1": best_f1})
+    if should_log_artifacts(config):
+        wandb_run.log_artifact(best_path, name=f"{checkpoint_prefix or 'source_only'}_best", artifact_type="model")
+    wandb_run.finish()
     return {
         "best_checkpoint": str(best_path),
         "latest_checkpoint": str(latest_path),

@@ -19,6 +19,7 @@ from src.training.evaluate import predict_model
 from src.training.metrics import classification_metrics
 from src.training.train import compute_class_weights
 from src.utils.io import ensure_dir
+from src.utils.wandb_logging import init_wandb, should_log_artifacts
 
 
 def train_dann(
@@ -35,6 +36,13 @@ def train_dann(
     output_dir = Path(output_dir)
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
     log_dir = ensure_dir(output_dir / "logs")
+    checkpoint_prefix = train_cfg.get("checkpoint_prefix", "dann")
+    wandb_run = init_wandb(
+        config,
+        job_type="train_dann",
+        default_name=checkpoint_prefix,
+        extra_config={"output_dir": str(output_dir), "device": str(device)},
+    )
     backup_dir = _checkpoint_backup_dir(config)
     if backup_dir is not None:
         ensure_dir(backup_dir)
@@ -94,7 +102,6 @@ def train_dann(
     patience = int(train_cfg["early_stopping_patience"])
     history = []
     global_step = 0
-    checkpoint_prefix = train_cfg.get("checkpoint_prefix", "dann")
     best_path = ckpt_dir / f"{checkpoint_prefix}_best.pt"
     latest_path = ckpt_dir / f"{checkpoint_prefix}_latest.pt"
 
@@ -172,6 +179,7 @@ def train_dann(
             "alpha": 0.0 if epoch <= int(dann_cfg.get("warmup_epochs", 0)) else float(dann_cfg["alpha"]),
         }
         history.append(row)
+        wandb_run.log({f"train/{key}": value for key, value in row.items() if key != "epoch"}, step=epoch)
         print(
             f"dann epoch {epoch}/{total_epochs}: loss={row['loss']:.4f}, "
             f"cls={row['loss_cls']:.4f}, dom={row['loss_domain']:.4f}, "
@@ -195,6 +203,10 @@ def train_dann(
     _write_history_csv(history, log_dir / train_log_name)
     if backup_dir is not None:
         _copy_to_backup(log_dir / train_log_name, backup_dir)
+    wandb_run.summary_update({"best_epoch": best_epoch, "best_source_val_macro_f1": best_f1})
+    if should_log_artifacts(config):
+        wandb_run.log_artifact(best_path, name=f"{checkpoint_prefix}_best", artifact_type="model")
+    wandb_run.finish()
     return {
         "best_checkpoint": str(best_path),
         "latest_checkpoint": str(latest_path),

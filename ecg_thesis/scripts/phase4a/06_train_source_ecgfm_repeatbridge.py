@@ -15,7 +15,7 @@ from src.utils.seed import set_seed
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/phase4a_ecgfm_leadbridge.yaml")
+    parser.add_argument("--config", default="configs/phase4a_ecgfm_repeatbridge.yaml")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--max-fit-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
@@ -45,10 +45,10 @@ def main() -> None:
     if args.max_val_samples is not None:
         val_ds = Subset(val_ds, list(range(min(int(args.max_val_samples), len(val_ds)))))
 
-    print(f"Phase 4A fit windows: {len(fit_ds)}, validation windows: {len(val_ds)}")
+    print(f"Phase 4A repeat-bridge fit windows: {len(fit_ds)}, validation windows: {len(val_ds)}")
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
     summary = train_source_only(fit_ds, val_ds, run_config, output, device)
-    write_json(summary, output / "metrics" / "source_only_ecgfm_leadbridge_train_summary.json")
+    write_json(summary, output / "metrics" / "source_only_ecgfm_repeatbridge_train_summary.json")
 
 
 def _apply_overrides(config: dict, args) -> None:

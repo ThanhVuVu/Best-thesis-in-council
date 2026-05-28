@@ -14,8 +14,8 @@ from src.utils.wandb_logging import init_wandb
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/phase4a_ecgfm_leadbridge.yaml")
-    parser.add_argument("--checkpoint", default="outputs/checkpoints/source_only_ecgfm_leadbridge_best.pt")
+    parser.add_argument("--config", default="configs/phase4a_ecgfm_leadbridge_weightedlr.yaml")
+    parser.add_argument("--checkpoint", default="outputs/checkpoints/source_only_ecgfm_leadbridge_weightedlr_best.pt")
     parser.add_argument("--dataset", choices=["mitbih", "incart", "both"], default="both")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--ecgfm-checkpoint", default=None)
@@ -46,13 +46,13 @@ def main() -> None:
 
     if args.dataset in ("mitbih", "both"):
         dataset = ECGBeatDataset(cfg_path(config, "data", "source_test"), return_metadata=True)
-        dataset, name = _maybe_subset(dataset, "source_only_ecgfm_leadbridge_mitbih_test", args.max_samples)
-        evaluate_and_save(model, dataset, device, output, name, "source_only_ecgfm_leadbridge", wandb_run=wandb_run)
+        dataset, name = _maybe_subset(dataset, "source_only_ecgfm_leadbridge_weightedlr_mitbih_test", args.max_samples)
+        evaluate_and_save(model, dataset, device, output, name, "source_only_ecgfm_leadbridge_weightedlr", wandb_run=wandb_run)
 
     if args.dataset in ("incart", "both"):
         dataset = ECGBeatDataset(cfg_path(config, "data", "target_test"), return_metadata=True)
-        dataset, name = _maybe_subset(dataset, "source_only_ecgfm_leadbridge_incart_heldout", args.max_samples)
-        evaluate_and_save(model, dataset, device, output, name, "source_only_ecgfm_leadbridge", wandb_run=wandb_run)
+        dataset, name = _maybe_subset(dataset, "source_only_ecgfm_leadbridge_weightedlr_incart_heldout", args.max_samples)
+        evaluate_and_save(model, dataset, device, output, name, "source_only_ecgfm_leadbridge_weightedlr", wandb_run=wandb_run)
     wandb_run.finish()
 
 
