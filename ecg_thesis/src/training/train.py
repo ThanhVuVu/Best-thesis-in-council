@@ -227,6 +227,7 @@ def _checkpoint_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
     if training_kwargs:
         return dict(training_kwargs)
     model_cfg = config.get("model", {})
+    model_name = str(checkpoint.get("model_name", checkpoint.get("config", {}).get("model", {}).get("backbone", ""))).lower()
     allowed = {
         "d_model",
         "num_heads",
@@ -244,7 +245,12 @@ def _checkpoint_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
         "ecgfm_checkpoint_path",
         "fairseq_signals_path",
         "freeze_ecgfm",
+        "input_channels",
+        "channels",
+        "se_reduction",
     }
+    if model_name in {"macnn_se", "macnn"}:
+        allowed.add("embedding_dim")
     return {key: model_cfg[key] for key in allowed if key in model_cfg}
 
 

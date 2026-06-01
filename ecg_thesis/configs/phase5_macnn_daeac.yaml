@@ -1,0 +1,104 @@
+seed: 42
+
+paths:
+  mitbih_raw_dir: ../mit-bih-arrhythmia-database-1.0.0/mit-bih-arrhythmia-database-1.0.0
+  incart_raw_dir: ../st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/files
+  processed_dir: data/processed/phase5_macnn
+  output_dir: outputs
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/phase5_macnn/mitbih_train_macnn.npz
+  source_test: data/processed/phase5_macnn/mitbih_test_macnn.npz
+  target_unlabeled: data/processed/phase5_macnn/incart_first5_unlabeled_macnn.npz
+  target_test: data/processed/phase5_macnn/incart_after5_heldout_macnn.npz
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  target_adapt_seconds: 300.0
+
+macnn_input:
+  output_length: 128
+  segment_start_after_prev_sec: 0.14
+  segment_end_after_current_sec: 0.28
+  normalize: zscore
+
+lead_selection:
+  preferred_leads:
+    mitbih: ["MLII", "II"]
+    incart: ["II", "MLII"]
+  fallback_lead_index: 0
+
+model:
+  backbone: macnn_se
+  num_classes: 3
+  num_domains: 2
+  input_channels: 1
+  channels: 256
+  embedding_dim: 256
+  se_reduction: 16
+  dropout: 0.0
+
+source_only:
+  model: macnn_se
+  checkpoint_prefix: macnn_se_source_only
+  epochs: 300
+  batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  use_class_weights: true
+  early_stopping_patience: 30
+
+dann:
+  alpha: 0.2
+  lambda_schedule: progressive
+  gamma: 3.0
+  fixed_lambda: 1.0
+  warmup_epochs: 3
+  source_init_checkpoint: outputs/checkpoints/macnn_se_source_only_best.pt
+
+training:
+  checkpoint_prefix: macnn_se_dann
+  epochs: 300
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  optimizer: adam
+  source_loss: weighted_ce
+  use_class_weights: true
+  early_stopping_patience: 30
+
+daeac:
+  checkpoint_prefix: macnn_se_daeac
+  init_checkpoint: outputs/checkpoints/macnn_se_source_only_best.pt
+  epochs: 300
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  beta1: 0.1
+  beta2: 0.1
+  margin: 10.0
+  ema_momentum: 0.9
+  pseudo_thresholds:
+    N: 0.999
+    S: 0.99
+    V: 0.99
+  use_align: true
+  use_compact: true
+  use_separation: true
+
+catnet_first5:
+  source_train: data/processed/mitbih_train.npz
+  source_test: data/processed/mitbih_test.npz
+  target_unlabeled: data/processed/phase5_macnn/incart_first5_unlabeled_catnet.npz
+  target_test: data/processed/phase5_macnn/incart_after5_heldout_catnet.npz
+  checkpoint_prefix: catnet_first5_dann
+
+evaluation:
+  primary_metric: macro_f1
+  save_predictions: true
+  save_confusion_matrix: true
+  focus_classes: ["S", "V"]

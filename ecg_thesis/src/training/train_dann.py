@@ -86,7 +86,9 @@ def train_dann(
     else:
         cls_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
     domain_loss_fn = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(
+    optimizer_name = str(train_cfg.get("optimizer", "adamw")).lower()
+    optimizer_cls = torch.optim.Adam if optimizer_name == "adam" else torch.optim.AdamW
+    optimizer = optimizer_cls(
         model.parameters(),
         lr=float(train_cfg["lr"]),
         weight_decay=float(train_cfg["weight_decay"]),
@@ -310,6 +312,7 @@ def _dataset_labels(dataset) -> np.ndarray:
 
 
 def _model_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
+    backbone = str(model_cfg.get("backbone", "")).lower()
     allowed = {
         "d_model",
         "num_heads",
@@ -319,7 +322,12 @@ def _model_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
         "dropout",
         "rr_feature_dim",
         "rr_embedding_dim",
+        "input_channels",
+        "channels",
+        "se_reduction",
     }
+    if backbone in {"macnn_se", "macnn"}:
+        allowed.add("embedding_dim")
     return {key: model_cfg[key] for key in allowed if key in model_cfg}
 
 

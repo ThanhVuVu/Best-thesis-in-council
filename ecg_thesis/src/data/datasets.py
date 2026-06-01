@@ -56,6 +56,47 @@ class ECGBeatRRDataset(ECGBeatDataset):
         return x, rr, y, self.metadata(idx)
 
 
+class ECGMACNNDataset(Dataset):
+    def __init__(self, npz_path: str | Path, return_metadata: bool = False):
+        self.path = Path(npz_path)
+        self.data = np.load(self.path, allow_pickle=True)
+        if "x_macnn" not in self.data:
+            raise KeyError(f"{self.path} does not contain x_macnn. Run Phase 5 MACNN preprocessing first.")
+        self.x = self.data["x_macnn"].astype(np.float32)
+        self.y = self.data["y"].astype(np.int64)
+        self.return_metadata = return_metadata
+        if self.x.ndim != 4 or tuple(self.x.shape[1:]) != (1, 3, 128):
+            raise ValueError(f"Expected x_macnn shape [N, 1, 3, 128] in {self.path}, got {self.x.shape}")
+        if len(self.x) != len(self.y):
+            raise ValueError(f"x_macnn/y length mismatch in {self.path}: {len(self.x)} vs {len(self.y)}")
+
+    def __len__(self) -> int:
+        return int(len(self.y))
+
+    def __getitem__(self, idx: int):
+        x = torch.from_numpy(self.x[idx])
+        y = torch.tensor(self.y[idx], dtype=torch.long)
+        if not self.return_metadata:
+            return x, y
+        return x, y, self.metadata(idx)
+
+    def metadata(self, idx: int) -> dict[str, Any]:
+        fields = ["record_id", "symbol", "r_peak_sample", "fs", "r_peak_time_sec", "lead_index", "lead_name"]
+        rows = {}
+        for field in fields:
+            if field not in self.data:
+                continue
+            value = self.data[field][idx]
+            rows[field] = value.item() if hasattr(value, "item") else value
+        return rows
+
+    @property
+    def records(self) -> np.ndarray:
+        if "record_id" in self.data:
+            return self.data["record_id"]
+        return self.data["record"]
+
+
 def subset_by_records(dataset: ECGBeatDataset, records: list[str]) -> Subset:
     wanted = set(records)
     indices = [i for i, rec in enumerate(dataset.records) if str(rec) in wanted]
