@@ -90,6 +90,22 @@ daeac:
   use_compact: true
   use_separation: true
 
+shot:
+  checkpoint_prefix: macnn_se_shot
+  init_checkpoint: outputs/checkpoints/macnn_se_source_only_lr001_best.pt
+  epochs: 15
+  batch_size: 256
+  lr: 0.0003
+  weight_decay: 0.0001
+  beta: 0.3
+  entropy_weight: 1.0
+  diversity_weight: 1.0
+  pseudo_labeling: true
+  diversity_target: uniform  # uniform, source_prior, none
+  source_prior: [0.9065, 0.0187, 0.0749]
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+
 catnet_first5:
   source_train: data/processed/mitbih_train.npz
   source_test: data/processed/mitbih_test.npz

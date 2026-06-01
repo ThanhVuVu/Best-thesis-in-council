@@ -14,6 +14,9 @@ METHODS = [
     ("MACNN_SE + DAEAC-style", "macnn_se_daeac"),
     ("MACNN_SE + L_align only", "macnn_se_daeac_align_only"),
     ("MACNN_SE + L_align + L_comp", "macnn_se_daeac_align_compact"),
+    ("MACNN_SE + SHOT-IM", "macnn_se_shot_im"),
+    ("MACNN_SE + SHOT full uniform", "macnn_se_shot_full_uniform"),
+    ("MACNN_SE + SHOT full source-prior", "macnn_se_shot_full_prior"),
 ]
 
 
