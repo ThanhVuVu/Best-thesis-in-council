@@ -41,7 +41,7 @@ model:
 source_only:
   model: macnn_se
   checkpoint_prefix: macnn_se_source_only
-  epochs: 300
+  epochs: 100
   batch_size: 256
   lr: 0.005
   weight_decay: 0.0001
@@ -58,7 +58,7 @@ dann:
 
 training:
   checkpoint_prefix: macnn_se_dann
-  epochs: 300
+  epochs: 100
   source_batch_size: 256
   target_batch_size: 256
   lr: 0.005
@@ -71,7 +71,7 @@ training:
 daeac:
   checkpoint_prefix: macnn_se_daeac
   init_checkpoint: outputs/checkpoints/macnn_se_source_only_best.pt
-  epochs: 300
+  epochs: 100
   source_batch_size: 256
   target_batch_size: 256
   lr: 0.005
