@@ -17,12 +17,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/phase5_macnn_daeac.yaml")
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--checkpoint-prefix", default=None)
     parser.add_argument("--max-fit-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
     args = parser.parse_args()
     config = load_phase1_config(args.config)
     if args.epochs is not None:
         config["source_only"]["epochs"] = int(args.epochs)
+    if args.lr is not None:
+        config["source_only"]["lr"] = float(args.lr)
+    if args.checkpoint_prefix is not None:
+        config["source_only"]["checkpoint_prefix"] = str(args.checkpoint_prefix)
     set_seed(int(config["seed"]))
     device = device_from_torch()
 
