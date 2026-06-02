@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from src.training.train_macnn import load_macnn_checkpoint, macnn_features_logits
 from src.utils.io import ensure_dir
+from src.utils.wandb_logging import init_wandb, should_log_artifacts
 
 EPS = 1e-8
 
@@ -39,6 +40,12 @@ def train_macnn_shot(
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
     log_dir = ensure_dir(output_dir / "logs")
     prefix = str(cfg.get("checkpoint_prefix", "macnn_se_shot"))
+    wandb_run = init_wandb(
+        config,
+        job_type="train_macnn_shot",
+        default_name=prefix,
+        extra_config={"output_dir": str(output_dir), "device": str(device)},
+    )
 
     model = load_macnn_checkpoint(_resolve_path(cfg["init_checkpoint"], config), config, device)
     for param in model.classifier.parameters():
@@ -134,6 +141,10 @@ def train_macnn_shot(
             best_epoch = epoch
             _save_shot_checkpoint(model, optimizer, scheduler, config, epoch, best_loss, best_epoch, history, best_path)
         _save_shot_checkpoint(model, optimizer, scheduler, config, epoch, best_loss, best_epoch, history, latest_path)
+        log_row = {f"train/{key}": value for key, value in row.items() if key not in {"epoch", "pseudo_counts"}}
+        for idx, count in enumerate(row["pseudo_counts"]):
+            log_row[f"train/pseudo_count_{idx}"] = count
+        wandb_run.log(log_row, step=epoch)
         print(
             f"{prefix} epoch {epoch}: loss={row['loss']:.4f}, "
             f"ent={row['loss_entropy']:.4f}, div={row['loss_diversity']:.4f}, "
@@ -141,6 +152,10 @@ def train_macnn_shot(
         )
 
     _write_history_csv(history, log_dir / f"{prefix}_train_log.csv")
+    wandb_run.summary_update({"best_epoch": best_epoch, "best_adaptation_loss": best_loss})
+    if should_log_artifacts(config):
+        wandb_run.log_artifact(best_path, name=f"{prefix}_best", artifact_type="model")
+    wandb_run.finish()
     return {
         "best_checkpoint": str(best_path),
         "latest_checkpoint": str(latest_path),

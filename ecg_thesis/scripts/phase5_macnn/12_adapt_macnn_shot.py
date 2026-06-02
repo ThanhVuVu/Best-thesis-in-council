@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from common import cfg_path, device_from_torch, load_phase1_config
+from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
 from src.data.datasets import ECGMACNNDataset
 from src.training.train_shot import train_macnn_shot
 from src.utils.io import ensure_dir, write_json
@@ -21,9 +21,11 @@ def main() -> None:
     parser.add_argument("--no-pseudo-labeling", action="store_true")
     parser.add_argument("--entropy-weight", type=float, default=None)
     parser.add_argument("--diversity-weight", type=float, default=None)
+    add_wandb_args(parser)
     args = parser.parse_args()
 
     config = load_phase1_config(args.config)
+    apply_wandb_overrides(config, args)
     if args.init_checkpoint is not None:
         config["shot"]["init_checkpoint"] = args.init_checkpoint
     if args.checkpoint_prefix is not None:
