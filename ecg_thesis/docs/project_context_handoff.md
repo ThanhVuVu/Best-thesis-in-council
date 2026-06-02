@@ -37,6 +37,16 @@ Important note:
 Data and outputs are ignored by git. Kaggle/Colab must copy processed .npz files into ecg_thesis/data/processed.
 ```
 
+Latest Phase 5 continuation note:
+
+```text
+For the next dynamic focal experiment, read:
+docs/phase5_dynamic_focal_source_to_dann_handoff.md
+
+Goal: train MACNN source-only from scratch with source_loss=dynamic_focal,
+then initialize MACNN DANN from that new source-only checkpoint.
+```
+
 ---
 
 ## Data Pipeline
@@ -574,4 +584,3 @@ Please read ecg_thesis/docs/project_context_handoff.md first.
 Then continue from Phase 3: RR/context features + CATNet1D + DANN, based on the current codebase.
 Do not restart Phase 1 or Phase 2 unless needed for verification.
 ```
-
