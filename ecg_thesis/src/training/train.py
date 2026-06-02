@@ -65,8 +65,15 @@ def train_source_only(
         class_weights = compute_class_weights(labels).to(device)
     else:
         class_weights = None
-    if train_cfg.get("source_loss", "weighted_ce") == "focal":
+    source_loss = train_cfg.get("source_loss", "weighted_ce")
+    if source_loss == "focal":
         criterion = FocalLoss(weight=class_weights, gamma=float(train_cfg.get("focal_gamma", 2.0)))
+    elif source_loss in {"dynamic_focal", "dynamic_weighted_focal"}:
+        criterion = DynamicWeightedFocalLoss(
+            num_classes=3,
+            gamma=float(train_cfg.get("focal_gamma", 2.0)),
+            eps=float(train_cfg.get("dynamic_focal_eps", 0.05)),
+        )
     else:
         criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(
@@ -271,6 +278,28 @@ class FocalLoss(torch.nn.Module):
         ce = torch.nn.functional.cross_entropy(logits, target, weight=self.weight, reduction="none")
         pt = torch.exp(-ce)
         return ((1.0 - pt) ** self.gamma * ce).mean()
+
+
+class DynamicWeightedFocalLoss(torch.nn.Module):
+    """Batch-proportion focal loss from Ran et al. MBE 2024.
+
+    The per-class alpha is recomputed for every input batch. Classes that occupy
+    a larger fraction of the batch receive a smaller alpha.
+    """
+
+    def __init__(self, num_classes: int, gamma: float = 2.0, eps: float = 0.05):
+        super().__init__()
+        self.num_classes = int(num_classes)
+        self.gamma = float(gamma)
+        self.eps = float(eps)
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        counts = torch.bincount(target, minlength=self.num_classes).to(logits.dtype)
+        alpha = 1.0 - counts / max(int(target.numel()), 1) + self.eps
+        ce = torch.nn.functional.cross_entropy(logits, target, reduction="none")
+        pt = torch.exp(-ce)
+        sample_alpha = alpha[target]
+        return (sample_alpha * ((1.0 - pt) ** self.gamma) * ce).mean()
 
 
 def _supervised_batch_to_device(batch, device: torch.device) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:

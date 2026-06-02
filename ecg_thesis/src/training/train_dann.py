@@ -17,7 +17,7 @@ from tqdm import tqdm
 from src.models.dann import DANNModel
 from src.training.evaluate import predict_model
 from src.training.metrics import classification_metrics
-from src.training.train import compute_class_weights
+from src.training.train import DynamicWeightedFocalLoss, compute_class_weights
 from src.utils.io import ensure_dir
 from src.utils.wandb_logging import init_wandb, should_log_artifacts
 
@@ -81,8 +81,15 @@ def train_dann(
 
     source_labels = _dataset_labels(source_train_dataset)
     class_weights = compute_class_weights(source_labels).to(device) if train_cfg.get("use_class_weights", True) else None
-    if train_cfg.get("source_loss", "weighted_ce") == "focal":
+    source_loss = str(train_cfg.get("source_loss", "weighted_ce")).lower()
+    if source_loss == "focal":
         cls_loss_fn = FocalLoss(weight=class_weights, gamma=float(train_cfg.get("focal_gamma", 2.0)))
+    elif source_loss in {"dynamic_focal", "dynamic_weighted_focal"}:
+        cls_loss_fn = DynamicWeightedFocalLoss(
+            num_classes=int(model_cfg["num_classes"]),
+            gamma=float(train_cfg.get("focal_gamma", 2.0)),
+            eps=float(train_cfg.get("dynamic_focal_eps", 0.05)),
+        )
     else:
         cls_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
     domain_loss_fn = torch.nn.CrossEntropyLoss()

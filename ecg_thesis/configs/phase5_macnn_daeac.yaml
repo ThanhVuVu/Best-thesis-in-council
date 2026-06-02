@@ -45,6 +45,9 @@ source_only:
   batch_size: 256
   lr: 0.005
   weight_decay: 0.0001
+  source_loss: weighted_ce
+  focal_gamma: 2.0
+  dynamic_focal_eps: 0.05
   use_class_weights: true
   early_stopping_patience: 30
 
@@ -65,6 +68,8 @@ training:
   weight_decay: 0.0001
   optimizer: adam
   source_loss: weighted_ce
+  focal_gamma: 2.0
+  dynamic_focal_eps: 0.05
   use_class_weights: true
   early_stopping_patience: 30
 
@@ -76,6 +81,10 @@ daeac:
   target_batch_size: 256
   lr: 0.005
   weight_decay: 0.0001
+  source_loss: weighted_ce
+  focal_gamma: 2.0
+  dynamic_focal_eps: 0.05
+  use_class_weights: true
   lr_decay_gamma: 0.99
   lr_decay_every_steps: 200
   beta1: 0.1

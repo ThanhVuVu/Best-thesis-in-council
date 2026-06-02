@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from src.models import build_model
 from src.training.metrics import classification_metrics
-from src.training.train import compute_class_weights
+from src.training.train import DynamicWeightedFocalLoss, FocalLoss, compute_class_weights
 from src.utils.io import ensure_dir
 
 
@@ -46,7 +46,7 @@ def train_macnn_source_only(train_dataset, val_dataset, config: dict[str, Any], 
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0, pin_memory=device.type == "cuda")
     labels = _dataset_labels(train_dataset)
     weights = compute_class_weights(labels, num_classes=int(model_cfg["num_classes"])).to(device) if cfg.get("use_class_weights", True) else None
-    criterion = torch.nn.CrossEntropyLoss(weight=weights)
+    criterion = _classification_loss(cfg, int(model_cfg["num_classes"]), weights)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.99)
 
@@ -116,8 +116,8 @@ def train_macnn_daeac(source_dataset, source_val_dataset, target_dataset, config
     target_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=True, num_workers=0, pin_memory=device.type == "cuda")
     val_loader = DataLoader(source_val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0, pin_memory=device.type == "cuda")
     labels = _dataset_labels(source_dataset)
-    weights = compute_class_weights(labels, num_classes=int(model_cfg["num_classes"])).to(device)
-    cls_loss_fn = torch.nn.CrossEntropyLoss(weight=weights)
+    weights = compute_class_weights(labels, num_classes=int(model_cfg["num_classes"])).to(device) if cfg.get("use_class_weights", True) else None
+    cls_loss_fn = _classification_loss(cfg, int(model_cfg["num_classes"]), weights)
     feature_params = [p for name, p in model.named_parameters() if not name.startswith("classifier.")]
     classifier_params = list(model.classifier.parameters())
     optimizer_f = torch.optim.Adam(feature_params, lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
@@ -342,6 +342,19 @@ def _dataset_labels(dataset) -> np.ndarray:
         parent_labels = _dataset_labels(dataset.dataset)
         return parent_labels[np.asarray(dataset.indices)]
     return dataset.y
+
+
+def _classification_loss(cfg: dict[str, Any], num_classes: int, weights: torch.Tensor | None) -> torch.nn.Module:
+    source_loss = str(cfg.get("source_loss", "weighted_ce")).lower()
+    if source_loss == "focal":
+        return FocalLoss(weight=weights, gamma=float(cfg.get("focal_gamma", 2.0)))
+    if source_loss in {"dynamic_focal", "dynamic_weighted_focal"}:
+        return DynamicWeightedFocalLoss(
+            num_classes=num_classes,
+            gamma=float(cfg.get("focal_gamma", 2.0)),
+            eps=float(cfg.get("dynamic_focal_eps", 0.05)),
+        )
+    return torch.nn.CrossEntropyLoss(weight=weights)
 
 
 def _threshold_tensor(thresholds: dict[str, float], class_names: list[str], device: torch.device) -> torch.Tensor:

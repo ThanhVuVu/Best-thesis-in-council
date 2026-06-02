@@ -18,6 +18,8 @@ def main() -> None:
     parser.add_argument("--config", default="configs/phase5_macnn_daeac.yaml")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--source-loss", choices=["weighted_ce", "focal", "dynamic_focal"], default=None)
+    parser.add_argument("--focal-gamma", type=float, default=None)
     parser.add_argument("--checkpoint-prefix", default=None)
     parser.add_argument("--max-fit-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
@@ -27,6 +29,10 @@ def main() -> None:
         config["source_only"]["epochs"] = int(args.epochs)
     if args.lr is not None:
         config["source_only"]["lr"] = float(args.lr)
+    if args.source_loss is not None:
+        config["source_only"]["source_loss"] = str(args.source_loss)
+    if args.focal_gamma is not None:
+        config["source_only"]["focal_gamma"] = float(args.focal_gamma)
     if args.checkpoint_prefix is not None:
         config["source_only"]["checkpoint_prefix"] = str(args.checkpoint_prefix)
     set_seed(int(config["seed"]))

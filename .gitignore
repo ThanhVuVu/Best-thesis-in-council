@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
+*.pyc.*
 *$py.class
 
 # C extensions
@@ -205,6 +206,14 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+
+# Local credentials and notebook/runtime state
+kaggle.json
+.netrc
+.DS_Store
+wandb/
+ecg_thesis/wandb/
+ecg_phase1/wandb/
 
 # Ruff stuff:
 .ruff_cache/

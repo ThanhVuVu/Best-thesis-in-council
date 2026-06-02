@@ -16,6 +16,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/phase5_macnn_daeac.yaml")
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--source-loss", choices=["weighted_ce", "focal", "dynamic_focal"], default=None)
+    parser.add_argument("--focal-gamma", type=float, default=None)
+    parser.add_argument("--checkpoint-prefix", default=None)
     parser.add_argument("--max-source-samples", type=int, default=None)
     parser.add_argument("--max-target-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
@@ -23,6 +26,12 @@ def main() -> None:
     config = load_phase1_config(args.config)
     if args.epochs is not None:
         config["training"]["epochs"] = int(args.epochs)
+    if args.source_loss is not None:
+        config["training"]["source_loss"] = str(args.source_loss)
+    if args.focal_gamma is not None:
+        config["training"]["focal_gamma"] = float(args.focal_gamma)
+    if args.checkpoint_prefix is not None:
+        config["training"]["checkpoint_prefix"] = str(args.checkpoint_prefix)
     set_seed(int(config["seed"]))
     device = device_from_torch()
 
