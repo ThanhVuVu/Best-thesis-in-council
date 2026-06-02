@@ -7,10 +7,11 @@ from pathlib import Path
 import numpy as np
 from torch.utils.data import DataLoader, Subset
 
-from common import cfg_path, device_from_torch, load_phase1_config
+from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
 from src.data.datasets import ECGMACNNDataset
 from src.training.train_macnn import evaluate_macnn_model, load_macnn_checkpoint
 from src.utils.io import ensure_dir, write_json
+from src.utils.wandb_logging import init_wandb, log_eval_metrics
 
 
 def main() -> None:
@@ -20,11 +21,19 @@ def main() -> None:
     parser.add_argument("--method-name", default="macnn_se")
     parser.add_argument("--dataset", choices=["mitbih", "incart", "both"], default="both")
     parser.add_argument("--max-samples", type=int, default=None)
+    add_wandb_args(parser)
     args = parser.parse_args()
     config = load_phase1_config(args.config)
+    apply_wandb_overrides(config, args)
     device = device_from_torch()
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
     model = load_macnn_checkpoint(args.checkpoint, config, device)
+    wandb_run = init_wandb(
+        config,
+        job_type="eval_macnn",
+        default_name=f"{args.method_name}_eval",
+        extra_config={"checkpoint": str(args.checkpoint), "dataset": args.dataset},
+    )
 
     datasets = []
     if args.dataset in {"mitbih", "both"}:
@@ -46,7 +55,9 @@ def main() -> None:
         metrics["setting"] = args.method_name
         write_json(metrics, output / "metrics" / f"{stem}_metrics.json")
         _write_predictions(output / "predictions" / f"{stem}_predictions.csv", result)
+        log_eval_metrics(wandb_run, metrics, prefix=f"eval/{args.method_name}/{name}")
         print(stem, metrics)
+    wandb_run.finish()
 
 
 def _write_predictions(path: Path, result: dict) -> None:

@@ -1,5 +1,16 @@
 seed: 42
 
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: phase5_macnn
+    mode: null  # online, offline, disabled
+    tags: ["phase5", "macnn"]
+    log_artifacts: false
+
 paths:
   mitbih_raw_dir: ../mit-bih-arrhythmia-database-1.0.0/mit-bih-arrhythmia-database-1.0.0
   incart_raw_dir: ../st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/files

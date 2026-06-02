@@ -4,7 +4,7 @@ import argparse
 
 from torch.utils.data import Subset
 
-from common import cfg_path, device_from_torch, load_phase1_config
+from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
 from src.data.datasets import ECGMACNNDataset, subset_by_records
 from src.data.splits import mitbih_fit_val_records
 from src.training.train_macnn import train_macnn_daeac
@@ -32,8 +32,10 @@ def main() -> None:
     parser.add_argument("--align-only", action="store_true")
     parser.add_argument("--align-compact", action="store_true")
     parser.add_argument("--no-separation", action="store_true")
+    add_wandb_args(parser)
     args = parser.parse_args()
     config = load_phase1_config(args.config)
+    apply_wandb_overrides(config, args)
     if args.epochs is not None:
         config["daeac"]["epochs"] = int(args.epochs)
     if args.lr is not None:

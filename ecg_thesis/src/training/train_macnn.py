@@ -15,6 +15,7 @@ from src.models import build_model
 from src.training.metrics import classification_metrics
 from src.training.train import DynamicWeightedFocalLoss, FocalLoss, compute_class_weights
 from src.utils.io import ensure_dir
+from src.utils.wandb_logging import init_wandb, should_log_artifacts
 
 
 def macnn_logits(model: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
@@ -41,6 +42,12 @@ def train_macnn_source_only(train_dataset, val_dataset, config: dict[str, Any], 
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
     log_dir = ensure_dir(output_dir / "logs")
     prefix = cfg.get("checkpoint_prefix", "macnn_se_source_only")
+    wandb_run = init_wandb(
+        config,
+        job_type="train_macnn_source_only",
+        default_name=prefix,
+        extra_config={"output_dir": str(output_dir), "device": str(device)},
+    )
     model = build_model(cfg["model"], num_classes=int(model_cfg["num_classes"]), **_model_kwargs(model_cfg)).to(device)
     train_loader = DataLoader(train_dataset, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=0, pin_memory=device.type == "cuda")
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0, pin_memory=device.type == "cuda")
@@ -92,10 +99,15 @@ def train_macnn_source_only(train_dataset, val_dataset, config: dict[str, Any], 
         else:
             stale += 1
         _save_checkpoint(model, optimizer, scheduler, config, cfg["model"], epoch, best_f1, best_epoch, history, latest_path)
+        wandb_run.log({f"train/{key}": value for key, value in row.items() if key != "epoch"}, step=epoch)
         print(f"{prefix} epoch {epoch}: val_macro_f1={val_metrics['macro_f1']:.4f}, best={best_f1:.4f}")
         if stale >= int(cfg["early_stopping_patience"]):
             break
     _write_history_csv(history, log_dir / f"{prefix}_train_log.csv")
+    wandb_run.summary_update({"best_epoch": best_epoch, "best_val_macro_f1": best_f1})
+    if should_log_artifacts(config):
+        wandb_run.log_artifact(best_path, name=f"{prefix}_best", artifact_type="model")
+    wandb_run.finish()
     return {"best_checkpoint": str(best_path), "latest_checkpoint": str(latest_path), "best_epoch": best_epoch, "best_val_macro_f1": best_f1, "history": history}
 
 
@@ -106,6 +118,12 @@ def train_macnn_daeac(source_dataset, source_val_dataset, target_dataset, config
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
     log_dir = ensure_dir(output_dir / "logs")
     prefix = cfg.get("checkpoint_prefix", "macnn_se_daeac")
+    wandb_run = init_wandb(
+        config,
+        job_type="train_macnn_daeac",
+        default_name=prefix,
+        extra_config={"output_dir": str(output_dir), "device": str(device)},
+    )
     model = build_model("macnn_se", num_classes=int(model_cfg["num_classes"]), **_model_kwargs(model_cfg)).to(device)
     _load_macnn_init(model, cfg.get("init_checkpoint"), config, device)
     aux = copy.deepcopy(model).to(device)
@@ -193,8 +211,13 @@ def train_macnn_daeac(source_dataset, source_val_dataset, target_dataset, config
             best_epoch = epoch
             _save_checkpoint(model, optimizer_f, scheduler_f, config, "macnn_se", epoch, best_f1, best_epoch, history, best_path)
         _save_checkpoint(model, optimizer_f, scheduler_f, config, "macnn_se", epoch, best_f1, best_epoch, history, latest_path)
+        wandb_run.log({f"train/{key}": value for key, value in row.items() if key != "epoch"}, step=epoch)
         print(f"{prefix} epoch {epoch}: val_macro_f1={val_metrics['macro_f1']:.4f}, confident_target={row['confident_target']:.1f}")
     _write_history_csv(history, log_dir / f"{prefix}_train_log.csv")
+    wandb_run.summary_update({"best_epoch": best_epoch, "best_source_val_macro_f1": best_f1})
+    if should_log_artifacts(config):
+        wandb_run.log_artifact(best_path, name=f"{prefix}_best", artifact_type="model")
+    wandb_run.finish()
     return {"best_checkpoint": str(best_path), "latest_checkpoint": str(latest_path), "best_epoch": best_epoch, "best_source_val_macro_f1": best_f1, "history": history}
 
 

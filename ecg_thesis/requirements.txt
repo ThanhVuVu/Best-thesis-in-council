@@ -10,3 +10,4 @@ seaborn
 tqdm
 umap-learn
 pyyaml
+wandb

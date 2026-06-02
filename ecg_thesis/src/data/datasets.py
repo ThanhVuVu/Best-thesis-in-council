@@ -65,8 +65,8 @@ class ECGMACNNDataset(Dataset):
         self.x = self.data["x_macnn"].astype(np.float32)
         self.y = self.data["y"].astype(np.int64)
         self.return_metadata = return_metadata
-        if self.x.ndim != 4 or tuple(self.x.shape[1:]) != (1, 3, 128):
-            raise ValueError(f"Expected x_macnn shape [N, 1, 3, 128] in {self.path}, got {self.x.shape}")
+        if self.x.ndim != 4 or self.x.shape[1] != 1 or self.x.shape[2] < 3 or self.x.shape[3] != 128:
+            raise ValueError(f"Expected x_macnn shape [N, 1, H>=3, 128] in {self.path}, got {self.x.shape}")
         if len(self.x) != len(self.y):
             raise ValueError(f"x_macnn/y length mismatch in {self.path}: {len(self.x)} vs {len(self.y)}")
 
