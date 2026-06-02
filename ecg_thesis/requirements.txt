@@ -11,3 +11,4 @@ tqdm
 umap-learn
 pyyaml
 wandb
+imbalanced-learn

@@ -1,0 +1,98 @@
+seed: 42
+
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: phase5_macnn_smotetomek
+    mode: null
+    tags: ["phase5", "macnn", "smotetomek"]
+    log_artifacts: false
+
+paths:
+  mitbih_raw_dir: ../mit-bih-arrhythmia-database-1.0.0/mit-bih-arrhythmia-database-1.0.0
+  incart_raw_dir: ../st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/files
+  processed_dir: data/processed/phase5_macnn
+  output_dir: outputs
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/phase5_macnn/mitbih_train_macnn.npz
+  source_test: data/processed/phase5_macnn/mitbih_test_macnn.npz
+  target_unlabeled: data/processed/phase5_macnn/incart_first5_unlabeled_macnn.npz
+  target_test: data/processed/phase5_macnn/incart_after5_heldout_macnn.npz
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  target_adapt_seconds: 300.0
+
+macnn_input:
+  output_length: 128
+  segment_start_after_prev_sec: 0.14
+  segment_end_after_current_sec: 0.28
+  normalize: zscore
+
+lead_selection:
+  preferred_leads:
+    mitbih: ["MLII", "II"]
+    incart: ["II", "MLII"]
+  fallback_lead_index: 0
+
+model:
+  backbone: macnn_se
+  num_classes: 3
+  num_domains: 2
+  input_channels: 1
+  channels: 256
+  embedding_dim: 256
+  se_reduction: 16
+  dropout: 0.0
+
+smotetomek:
+  source_train: data/processed/phase5_macnn/mitbih_fit_macnn_smotetomek_cap_n12000_s4000_v6000.npz
+  target_counts:
+    N: 12000
+    S: 4000
+    V: 6000
+
+source_only:
+  model: macnn_se
+  checkpoint_prefix: macnn_se_source_only_smotetomek_cap_n12000_s4000_v6000
+  epochs: 100
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.0001
+  source_loss: weighted_ce
+  focal_gamma: 2.0
+  dynamic_focal_eps: 0.05
+  use_class_weights: false
+  early_stopping_patience: 30
+
+dann:
+  alpha: 0.2
+  lambda_schedule: progressive
+  gamma: 3.0
+  fixed_lambda: 1.0
+  warmup_epochs: 3
+  source_init_checkpoint: outputs/checkpoints/macnn_se_source_only_smotetomek_cap_n12000_s4000_v6000_best.pt
+
+training:
+  checkpoint_prefix: macnn_se_dann_from_smotetomek_source
+  epochs: 100
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  optimizer: adam
+  source_loss: weighted_ce
+  focal_gamma: 2.0
+  dynamic_focal_eps: 0.05
+  use_class_weights: true
+  early_stopping_patience: 30
+
+evaluation:
+  primary_metric: macro_f1
+  save_predictions: true
+  save_confusion_matrix: true
+  focus_classes: ["S", "V"]
