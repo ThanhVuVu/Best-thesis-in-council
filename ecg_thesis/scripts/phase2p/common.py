@@ -61,17 +61,30 @@ def fit_val_datasets(config: dict[str, Any], use_duplicated: bool = False):
         source_val = ECGBeatTimeDataset(cfg_path(config, "data", "source_train"))
         val_records_arr = np.asarray([str(r) for r in source_val.records])
         val_idx = [i for i, rec in enumerate(val_records_arr) if rec in set(val_records)]
+        _assert_nonempty_split(
+            fit_idx,
+            val_idx,
+            source_path,
+            cfg_path(config, "data", "source_train"),
+            records,
+            val_records_arr,
+            fit_records,
+            val_records,
+        )
         return Subset(full, fit_idx), Subset(source_val, val_idx)
     fit_records, val_records = mitbih_fit_val_records()
     records = np.asarray([str(r) for r in full.records])
     fit_idx = [i for i, rec in enumerate(records) if rec in set(fit_records)]
     val_idx = [i for i, rec in enumerate(records) if rec in set(val_records)]
+    _assert_nonempty_split(fit_idx, val_idx, source_path, source_path, records, records, fit_records, val_records)
     return Subset(full, fit_idx), Subset(full, val_idx)
 
 
 def maybe_subset(dataset, max_samples: int | None):
     if max_samples is None:
         return dataset
+    if len(dataset) == 0:
+        raise ValueError("Cannot subset an empty dataset. Check the upstream record split and .npz file contents.")
     return Subset(dataset, list(range(min(int(max_samples), len(dataset)))))
 
 
@@ -97,6 +110,8 @@ def batch_to_device(batch, device: torch.device):
 @torch.no_grad()
 def evaluate_model(model, dataset, device: torch.device, batch_size: int = 128, max_samples: int | None = None):
     ds = maybe_subset(dataset, max_samples)
+    if len(ds) == 0:
+        raise ValueError("Evaluation dataset is empty. Check that the expected validation/test records exist in the .npz file.")
     dl = loader(ds, batch_size, False, device)
     model.to(device)
     model.eval()
@@ -119,6 +134,37 @@ def evaluate_model(model, dataset, device: torch.device, batch_size: int = 128, 
     }
     result["metrics"] = classification_metrics(result["y_true"], result["y_pred"])
     return result
+
+
+def _assert_nonempty_split(
+    fit_idx: list[int],
+    val_idx: list[int],
+    fit_path: Path,
+    val_path: Path,
+    fit_records_present: np.ndarray,
+    val_records_present: np.ndarray,
+    expected_fit_records: list[str],
+    expected_val_records: list[str],
+) -> None:
+    if fit_idx and val_idx:
+        return
+    fit_present = sorted(set(str(r) for r in fit_records_present))
+    val_present = sorted(set(str(r) for r in val_records_present))
+    missing_fit = [rec for rec in expected_fit_records if rec not in set(fit_present)]
+    missing_val = [rec for rec in expected_val_records if rec not in set(val_present)]
+    message = [
+        "Phase 2P MIT-BIH fit/validation split is empty or incomplete.",
+        f"fit samples: {len(fit_idx)} from {fit_path}",
+        f"validation samples: {len(val_idx)} from {val_path}",
+        f"expected fit records: {expected_fit_records}",
+        f"expected validation records: {expected_val_records}",
+        f"records present in fit file: {fit_present}",
+        f"records present in validation file: {val_present}",
+        f"missing fit records: {missing_fit}",
+        f"missing validation records: {missing_val}",
+        "Most likely the attached mitbih_train_paper.npz was generated with --max-records or does not contain the full MIT-BIH train split.",
+    ]
+    raise ValueError("\n".join(message))
 
 
 def save_predictions(result: dict[str, Any], path: str | Path, class_names: list[str]) -> None:
@@ -197,4 +243,3 @@ def _batch_metadata_to_rows(meta: dict[str, Any]) -> list[dict[str, Any]]:
             row[key] = value
         rows.append(row)
     return rows
-
