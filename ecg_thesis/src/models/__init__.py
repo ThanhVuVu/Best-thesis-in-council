@@ -1,4 +1,5 @@
 from src.models.catnet1d import CATNet1D
+from src.models.catnet_biclassifier import CATNetBiClassifier
 from src.models.catnet_rr1d import CATNetRR1D
 from src.models.ecgfm_leadbridge import ECGFMLeadBridgeClassifier
 from src.models.inceptiontime1d import InceptionTime1D
@@ -17,6 +18,8 @@ def build_model(name: str, num_classes: int = 3, **kwargs):
         return InceptionTime1D(num_classes=num_classes)
     if name == "catnet1d":
         return CATNet1D(num_classes=num_classes, **kwargs)
+    if name in {"catnet_biclassifier", "catnet_bi"}:
+        return CATNetBiClassifier(num_classes=num_classes, **kwargs)
     if name == "catnet_rr1d":
         return CATNetRR1D(num_classes=num_classes, **kwargs)
     if name == "ecgfm_leadbridge":

@@ -56,6 +56,27 @@ class ECGBeatRRDataset(ECGBeatDataset):
         return x, rr, y, self.metadata(idx)
 
 
+class ECGBeatTimeDataset(ECGBeatDataset):
+    def __init__(self, npz_path: str | Path, return_metadata: bool = False):
+        super().__init__(npz_path, return_metadata=return_metadata)
+        if "time_features" not in self.data:
+            raise KeyError(f"{self.path} does not contain time_features. Run Phase 2P preprocessing first.")
+        self.time_features = self.data["time_features"].astype(np.float32)
+        if len(self.time_features) != len(self.y):
+            raise ValueError(
+                f"time_features length mismatch in {self.path}: "
+                f"{len(self.time_features)} rows vs {len(self.y)} labels"
+            )
+
+    def __getitem__(self, idx: int):
+        x = torch.from_numpy(self.x[idx])
+        time_features = torch.from_numpy(self.time_features[idx])
+        y = torch.tensor(self.y[idx], dtype=torch.long)
+        if not self.return_metadata:
+            return x, time_features, y
+        return x, time_features, y, self.metadata(idx)
+
+
 class ECGMACNNDataset(Dataset):
     def __init__(self, npz_path: str | Path, return_metadata: bool = False):
         self.path = Path(npz_path)

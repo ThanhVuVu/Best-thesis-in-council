@@ -15,6 +15,21 @@ unlabeled adaptation, plus a fair CATNet1D+DANN rerun on the same split.
 
 Raw PhysioNet data, processed `.npz` files, checkpoints, logs, figures, and predictions are intentionally ignored by git.
 
+For the canonical scientific order and status labels, read:
+
+```text
+docs/scientific_repo_order.md
+```
+
+Current thesis-safe result hierarchy:
+
+```text
+Accepted: Phase 1 and Phase 2.
+Best accepted result: Phase 2 CATNet1D + DANN.
+Full-run pending: Phase 3 RR-aware CATNet1D + DANN.
+Advanced/scaffolded: Phase 4 ECG-FM and Phase 5 MACNN branches.
+```
+
 ## Layout
 
 ```text
