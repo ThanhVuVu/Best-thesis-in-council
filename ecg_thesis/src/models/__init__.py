@@ -1,6 +1,7 @@
 from src.models.catnet1d import CATNet1D
 from src.models.catnet_biclassifier import CATNetBiClassifier
 from src.models.catnet_rr1d import CATNetRR1D
+from src.models.clef_pretrained import CLEFPretrainedClassifier
 from src.models.ecgfm_leadbridge import ECGFMLeadBridgeClassifier
 from src.models.inceptiontime1d import InceptionTime1D
 from src.models.macnn_se import MACNN_SE
@@ -22,6 +23,8 @@ def build_model(name: str, num_classes: int = 3, **kwargs):
         return CATNetBiClassifier(num_classes=num_classes, **kwargs)
     if name == "catnet_rr1d":
         return CATNetRR1D(num_classes=num_classes, **kwargs)
+    if name == "clef_pretrained":
+        return CLEFPretrainedClassifier(num_classes=num_classes, **kwargs)
     if name == "ecgfm_leadbridge":
         return ECGFMLeadBridgeClassifier(num_classes=num_classes, **kwargs)
     if name == "ecgfm_repeatbridge":

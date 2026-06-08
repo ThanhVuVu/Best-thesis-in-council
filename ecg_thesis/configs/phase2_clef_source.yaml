@@ -1,0 +1,65 @@
+seed: 42
+
+paths:
+  processed_dir: data/processed/phase4a
+  output_dir: outputs/phase2_clef
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/phase4a/mitbih_train_5s.npz
+  source_test: data/processed/phase4a/mitbih_test_5s.npz
+  target_unlabeled: data/processed/phase4a/incart_unlabeled_5s.npz
+  target_test: data/processed/phase4a/incart_test_heldout_5s.npz
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  target_fs: 500
+  window_seconds: 5.0
+  window_samples: 2500
+  normalize: window_zscore
+  bandpass:
+    enabled: true
+    low_hz: 0.5
+    high_hz: 40.0
+    order: 4
+
+model:
+  backbone: clef_pretrained
+  num_classes: 3
+  model_size: small
+  clef_checkpoint_path: models/clef/clef_small.ckpt
+  in_channels: 1
+  head_hidden_dim: 256
+  dropout: 0.1
+  encoder_lr: 0.00003
+  freeze_encoder: true
+
+source_only:
+  enabled: true
+  model: clef_pretrained
+  checkpoint_prefix: clef_frozen
+  epochs: 30
+  batch_size: 64
+  lr: 0.001
+  weight_decay: 0.0001
+  source_loss: weighted_ce
+  focal_gamma: 2.0
+  use_class_weights: true
+  early_stopping_patience: 10
+
+modes:
+  clef_frozen:
+    checkpoint_prefix: clef_frozen
+    freeze_encoder: true
+    lr: 0.001
+    encoder_lr: 0.0
+  clef_finetune:
+    checkpoint_prefix: clef_finetune
+    freeze_encoder: false
+    lr: 0.001
+    encoder_lr: 0.00003
+
+evaluation:
+  primary_metric: macro_f1
+  save_predictions: true
+  save_confusion_matrix: true
+  focus_classes: ["S", "V"]

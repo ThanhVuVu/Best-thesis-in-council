@@ -76,11 +76,7 @@ def train_source_only(
         )
     else:
         criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(train_cfg["lr"]),
-        weight_decay=float(train_cfg["weight_decay"]),
-    )
+    optimizer = _build_source_optimizer(model, train_cfg)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3)
 
     best_f1 = -1.0
@@ -140,6 +136,8 @@ def train_source_only(
             "val_macro_f1": val_metrics["macro_f1"],
             "lr": optimizer.param_groups[0]["lr"],
         }
+        if len(optimizer.param_groups) > 1:
+            row["encoder_lr"] = optimizer.param_groups[1]["lr"]
         history.append(row)
         wandb_run.log({f"train/{key}": value for key, value in row.items() if key != "epoch"}, step=epoch)
         print(
@@ -255,10 +253,29 @@ def _checkpoint_model_kwargs(checkpoint: dict[str, Any]) -> dict[str, Any]:
         "input_channels",
         "channels",
         "se_reduction",
+        "model_size",
+        "clef_checkpoint_path",
+        "in_channels",
+        "freeze_encoder",
+        "head_hidden_dim",
+        "encoder_lr",
     }
     if model_name in {"macnn_se", "macnn"}:
         allowed.add("embedding_dim")
     return {key: model_cfg[key] for key in allowed if key in model_cfg}
+
+
+def _build_source_optimizer(model: torch.nn.Module, train_cfg: dict[str, Any]) -> torch.optim.Optimizer:
+    lr = float(train_cfg["lr"])
+    weight_decay = float(train_cfg["weight_decay"])
+    if hasattr(model, "optimizer_param_groups"):
+        param_groups = model.optimizer_param_groups(lr=lr, weight_decay=weight_decay)
+        return torch.optim.AdamW(param_groups)
+    return torch.optim.AdamW(
+        model.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+    )
 
 
 def _dataset_labels(dataset) -> np.ndarray:
