@@ -1,0 +1,57 @@
+seed: 42
+
+paths:
+  processed_dir: data/processed
+  output_dir: outputs/phase2_clef_adda
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/mitbih_train.npz
+  source_test: data/processed/mitbih_test.npz
+  target_full: data/processed/incart_test.npz
+  target_unlabeled: data/processed/incart_unlabeled.npz
+  target_test: data/processed/incart_test_heldout.npz
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  target_sampling_rate: 360
+  beat_length: 250
+  left_window_samples_360hz: 100
+  right_window_samples_360hz: 150
+  normalize: per_beat_zscore
+
+model:
+  backbone: clef_pretrained
+  num_classes: 3
+  model_size: small
+  clef_checkpoint_path: models/clef/clef_small.ckpt
+  in_channels: 1
+  freeze_encoder: false
+  head_hidden_dim: 256
+  dropout: 0.1
+  encoder_lr: 0.00001
+  discriminator_hidden_dim: 256
+  discriminator_dropout: 0.1
+
+training:
+  checkpoint_prefix: clef_adda_from_finetune
+  epochs: 50
+  batch_size: 64
+  target_encoder_lr: 0.00001
+  discriminator_lr: 0.0003
+  weight_decay: 0.0001
+  early_stopping_patience: 10
+  checkpoint_metric: source_val_macro_f1
+
+adda:
+  source_init_checkpoint: outputs/phase2_clef/checkpoints/clef_finetune_best.pt
+  source_init_expected_model: clef_pretrained
+
+evaluation:
+  primary_metric: macro_f1
+  save_predictions: true
+  save_confusion_matrix: true
+  focus_classes: ["S", "V"]
+
+visualization:
+  embedding_method: umap
+  max_points_per_domain: 3000
