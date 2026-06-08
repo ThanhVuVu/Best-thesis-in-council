@@ -1,26 +1,22 @@
 seed: 42
 
 paths:
-  processed_dir: data/processed/phase4a
+  processed_dir: data/processed
   output_dir: outputs/phase2_clef
   checkpoint_backup_dir: null
 
 data:
-  source_train: data/processed/phase4a/mitbih_train_5s.npz
-  source_test: data/processed/phase4a/mitbih_test_5s.npz
-  target_unlabeled: data/processed/phase4a/incart_unlabeled_5s.npz
-  target_test: data/processed/phase4a/incart_test_heldout_5s.npz
+  source_train: data/processed/mitbih_train.npz
+  source_test: data/processed/mitbih_test.npz
+  target_unlabeled: data/processed/incart_unlabeled.npz
+  target_test: data/processed/incart_test_heldout.npz
   class_names: ["N", "S", "V"]
   num_classes: 3
-  target_fs: 500
-  window_seconds: 5.0
-  window_samples: 2500
-  normalize: window_zscore
-  bandpass:
-    enabled: true
-    low_hz: 0.5
-    high_hz: 40.0
-    order: 4
+  target_sampling_rate: 360
+  beat_length: 250
+  left_window_samples_360hz: 100
+  right_window_samples_360hz: 150
+  normalize: per_beat_zscore
 
 model:
   backbone: clef_pretrained
