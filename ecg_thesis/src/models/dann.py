@@ -15,12 +15,20 @@ class DANNModel(nn.Module):
         num_domains: int = 2,
         dropout: float = 0.3,
         backbone_kwargs: dict | None = None,
+        reuse_backbone_classifier: bool = False,
     ):
         super().__init__()
         self.backbone_name = backbone
         self.feature_extractor = build_model(backbone, num_classes=num_classes, **(backbone_kwargs or {}))
         embedding_dim = self._infer_embedding_dim()
-        self.label_classifier = nn.Linear(embedding_dim, num_classes)
+        self.reuse_backbone_classifier = bool(reuse_backbone_classifier)
+        if self.reuse_backbone_classifier:
+            classifier = getattr(self.feature_extractor, "classifier", None)
+            if classifier is None:
+                raise ValueError(f"Backbone {backbone!r} has no classifier to reuse for DANN")
+            self.label_classifier = classifier
+        else:
+            self.label_classifier = nn.Linear(embedding_dim, num_classes)
         self.grl = GradientReversalLayer()
         self.domain_classifier = nn.Sequential(
             nn.Linear(embedding_dim, embedding_dim),

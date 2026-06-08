@@ -54,6 +54,7 @@ def train_dann(
         num_domains=int(model_cfg["num_domains"]),
         dropout=float(model_cfg["dropout"]),
         backbone_kwargs=_model_kwargs(model_cfg),
+        reuse_backbone_classifier=bool(model_cfg.get("reuse_backbone_classifier", False)),
     ).to(device)
     _load_source_initialization(model, config, device)
 
@@ -95,11 +96,7 @@ def train_dann(
     domain_loss_fn = torch.nn.CrossEntropyLoss()
     optimizer_name = str(train_cfg.get("optimizer", "adamw")).lower()
     optimizer_cls = torch.optim.Adam if optimizer_name == "adam" else torch.optim.AdamW
-    optimizer = optimizer_cls(
-        model.parameters(),
-        lr=float(train_cfg["lr"]),
-        weight_decay=float(train_cfg["weight_decay"]),
-    )
+    optimizer = optimizer_cls(_dann_param_groups(model, model_cfg, train_cfg))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3)
 
     total_epochs = int(train_cfg["epochs"])
@@ -183,10 +180,16 @@ def train_dann(
             "source_val_accuracy": val_metrics["accuracy"],
             "source_val_macro_f1": val_metrics["macro_f1"],
             "domain_accuracy": domain_acc,
-            "lr": optimizer.param_groups[0]["lr"],
+            "lr": _group_lr(optimizer, "classifier", default_index=0),
             "lambda": dann_lambda(global_step, total_steps, dann_cfg),
             "alpha": 0.0 if epoch <= int(dann_cfg.get("warmup_epochs", 0)) else float(dann_cfg["alpha"]),
         }
+        encoder_lr = _group_lr(optimizer, "encoder", default_index=None)
+        domain_lr = _group_lr(optimizer, "domain", default_index=None)
+        if encoder_lr is not None:
+            row["encoder_lr"] = encoder_lr
+        if domain_lr is not None:
+            row["domain_lr"] = domain_lr
         history.append(row)
         wandb_run.log({f"train/{key}": value for key, value in row.items() if key != "epoch"}, step=epoch)
         print(
@@ -236,29 +239,50 @@ def dann_lambda(step: int, total_steps: int, config: dict[str, Any]) -> float:
 
 def _load_source_initialization(model: DANNModel, config: dict[str, Any], device: torch.device) -> None:
     checkpoint_value = config.get("dann", {}).get("source_init_checkpoint")
+    require_checkpoint = bool(config.get("dann", {}).get("require_source_init_checkpoint", False))
     if checkpoint_value in (None, "", "null", "None"):
+        if require_checkpoint:
+            raise ValueError("DANN source initialization checkpoint is required but not configured")
         return
 
     checkpoint_path = Path(checkpoint_value)
     if not checkpoint_path.is_absolute():
         checkpoint_path = Path(config.get("_base_dir", ".")) / checkpoint_path
     if not checkpoint_path.exists():
+        if require_checkpoint:
+            raise FileNotFoundError(f"Required DANN source initialization checkpoint not found: {checkpoint_path}")
         print(f"Source initialization checkpoint not found, training DANN from scratch: {checkpoint_path}")
         return
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = _torch_load_checkpoint(checkpoint_path, device)
+    expected_model = config.get("dann", {}).get("source_init_expected_model")
+    checkpoint_model = checkpoint.get("model_name") if isinstance(checkpoint, dict) else None
+    if expected_model and checkpoint_model != expected_model:
+        message = (
+            f"DANN source initialization checkpoint model mismatch: "
+            f"expected {expected_model!r}, got {checkpoint_model!r} at {checkpoint_path}"
+        )
+        if require_checkpoint:
+            raise ValueError(message)
+        print(message)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
+    matched_keys = _count_matching_state_keys(model.feature_extractor, state_dict)
+    if require_checkpoint and matched_keys == 0:
+        raise ValueError(f"No matching feature extractor keys found in source checkpoint: {checkpoint_path}")
     missing, unexpected = model.feature_extractor.load_state_dict(state_dict, strict=False)
     copied_classifier = _copy_source_classifier(model)
     print(
         "Initialized DANN feature extractor from source-only checkpoint:",
         {
             "path": str(checkpoint_path),
-            "epoch": checkpoint.get("epoch"),
-            "best_epoch": checkpoint.get("best_epoch"),
+            "model_name": checkpoint_model,
+            "epoch": checkpoint.get("epoch") if isinstance(checkpoint, dict) else None,
+            "best_epoch": checkpoint.get("best_epoch") if isinstance(checkpoint, dict) else None,
+            "matched_keys": matched_keys,
             "missing_keys": len(missing),
             "unexpected_keys": len(unexpected),
             "copied_classifier": copied_classifier,
+            "reused_backbone_classifier": bool(getattr(model, "reuse_backbone_classifier", False)),
         },
     )
 
@@ -267,6 +291,8 @@ def _copy_source_classifier(model: DANNModel) -> bool:
     source_classifier = getattr(model.feature_extractor, "classifier", None)
     if source_classifier is None:
         return False
+    if source_classifier is model.label_classifier:
+        return True
     try:
         model.label_classifier.load_state_dict(source_classifier.state_dict())
     except RuntimeError:
@@ -286,16 +312,23 @@ class FocalLoss(torch.nn.Module):
         return ((1.0 - pt) ** self.gamma * ce).mean()
 
 
-def load_dann_from_checkpoint(checkpoint_path: str | Path, device: torch.device):
+def load_dann_from_checkpoint(
+    checkpoint_path: str | Path,
+    device: torch.device,
+    model_kwargs_override: dict[str, Any] | None = None,
+):
     checkpoint_path = Path(checkpoint_path)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model_cfg = checkpoint["config"]["model"]
+    checkpoint = _torch_load_checkpoint(checkpoint_path, device)
+    model_cfg = dict(checkpoint["config"]["model"])
+    if model_kwargs_override:
+        model_cfg.update({key: value for key, value in model_kwargs_override.items() if value is not None})
     model = DANNModel(
         backbone=model_cfg["backbone"],
         num_classes=int(model_cfg["num_classes"]),
         num_domains=int(model_cfg["num_domains"]),
         dropout=float(model_cfg["dropout"]),
         backbone_kwargs=_model_kwargs(model_cfg),
+        reuse_backbone_classifier=bool(model_cfg.get("reuse_backbone_classifier", False)),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     print(
@@ -318,6 +351,94 @@ def _dataset_labels(dataset) -> np.ndarray:
     return dataset.y
 
 
+def _dann_param_groups(model: DANNModel, model_cfg: dict[str, Any], train_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    lr = float(train_cfg["lr"])
+    weight_decay = float(train_cfg["weight_decay"])
+    if str(model_cfg.get("backbone", "")).lower() != "clef_pretrained":
+        return [{"params": model.parameters(), "lr": lr, "weight_decay": weight_decay, "name": "all"}]
+
+    seen: set[int] = set()
+    groups: list[dict[str, Any]] = []
+    classifier_params = _unique_trainable_params(model.label_classifier.parameters(), seen)
+    encoder = getattr(model.feature_extractor, "encoder", None)
+    encoder_params = _unique_trainable_params(encoder.parameters(), seen) if encoder is not None else []
+    domain_params = _unique_trainable_params(model.domain_classifier.parameters(), seen)
+
+    if classifier_params:
+        groups.append({"params": classifier_params, "lr": lr, "weight_decay": weight_decay, "name": "classifier"})
+    if encoder_params:
+        groups.append(
+            {
+                "params": encoder_params,
+                "lr": float(model_cfg.get("encoder_lr", train_cfg.get("encoder_lr", lr))),
+                "weight_decay": weight_decay,
+                "name": "encoder",
+            }
+        )
+    if domain_params:
+        groups.append(
+            {
+                "params": domain_params,
+                "lr": float(train_cfg.get("domain_lr", lr)),
+                "weight_decay": weight_decay,
+                "name": "domain",
+            }
+        )
+    if not groups:
+        raise ValueError("No trainable parameters found for CLEF-DANN")
+    print(
+        "DANN optimizer param groups:",
+        [
+            {
+                "name": group["name"],
+                "lr": group["lr"],
+                "weight_decay": group["weight_decay"],
+                "params": len(group["params"]),
+            }
+            for group in groups
+        ],
+    )
+    return groups
+
+
+def _unique_trainable_params(parameters, seen: set[int]) -> list[torch.nn.Parameter]:
+    unique = []
+    for param in parameters:
+        if not param.requires_grad:
+            continue
+        param_id = id(param)
+        if param_id in seen:
+            continue
+        seen.add(param_id)
+        unique.append(param)
+    return unique
+
+
+def _group_lr(optimizer: torch.optim.Optimizer, name: str, default_index: int | None) -> float | None:
+    for group in optimizer.param_groups:
+        if group.get("name") == name:
+            return float(group["lr"])
+    if default_index is None:
+        return None
+    return float(optimizer.param_groups[default_index]["lr"])
+
+
+def _torch_load_checkpoint(checkpoint_path: Path, device: torch.device):
+    try:
+        return torch.load(checkpoint_path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(checkpoint_path, map_location=device)
+
+
+def _count_matching_state_keys(model: torch.nn.Module, state_dict: dict[str, torch.Tensor]) -> int:
+    model_state = model.state_dict()
+    return sum(
+        1
+        for key, value in state_dict.items()
+        if key in model_state and hasattr(value, "shape") and tuple(model_state[key].shape) == tuple(value.shape)
+    )
+
+
 def _model_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
     backbone = str(model_cfg.get("backbone", "")).lower()
     allowed = {
@@ -333,6 +454,17 @@ def _model_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
         "channels",
         "se_reduction",
     }
+    if backbone == "clef_pretrained":
+        allowed.update(
+            {
+                "model_size",
+                "clef_checkpoint_path",
+                "in_channels",
+                "freeze_encoder",
+                "head_hidden_dim",
+                "encoder_lr",
+            }
+        )
     if backbone in {"macnn_se", "macnn"}:
         allowed.add("embedding_dim")
     return {key: model_cfg[key] for key in allowed if key in model_cfg}
