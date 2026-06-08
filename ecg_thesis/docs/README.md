@@ -12,6 +12,8 @@ This folder keeps human-facing project notes. Generated reports stay in
 - `current_status_report.md` - latest repo inspection, phase-by-phase status,
   trusted results, local-output caveats, and next steps.
 - `phase2_dann_baseline_plan.md` - CATNet1D and DANN baseline plan.
+- `phase2p_detailed_method_plan.md` - detailed paper-style preprocessing,
+  CATNet bi-classifier, DRO, prototype, pseudo-label, and centroid UDA protocol.
 - `phase3_rr_dann_plan.md` - RR/context follow-up plan built on Phase 2.
 - Phase 5 MACNN/DAEAC-style implementation is documented in the root
   `README.md` and configured by `configs/phase5_macnn_daeac.yaml`.
@@ -26,6 +28,7 @@ scientific_repo_order.md
 current_status_report.md
 project_context_handoff.md
 phase2_dann_baseline_plan.md
+phase2p_detailed_method_plan.md
 phase3_rr_dann_plan.md
 ```
 
