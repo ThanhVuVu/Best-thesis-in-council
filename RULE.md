@@ -171,6 +171,45 @@ paths:
 - Report-generation scripts should read existing outputs and write reports under
   `outputs/`.
 
+### Weights & Biases tracking
+
+- New train and eval workflows should support Weights & Biases tracking unless
+  there is a clear reason not to.
+- Prefer the existing helpers in `src/utils/wandb_logging.py`:
+  - add `add_wandb_args(parser)` to runnable scripts when practical
+  - call `apply_wandb_overrides(config, args)` after loading config
+  - use `init_wandb(...)` for train/eval runs
+  - use `log_eval_metrics(...)` for evaluation metrics
+- Configs may define W&B under:
+
+```yaml
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: null
+    mode: null
+    tags: []
+    log_artifacts: false
+```
+
+- Default configs should keep `logging.wandb.enabled: false` unless the
+  experiment is explicitly intended to run with W&B by default.
+- Long cloud notebooks should expose cells or command flags for enabling W&B,
+  including project, group, run name, mode, and tags.
+- Training runs should log epoch-level losses, primary metrics, learning rates,
+  and best-epoch summaries. Adaptation runs should also log adaptation-specific
+  metrics such as domain accuracy, entropy, pseudo-label counts, or alignment
+  losses when available.
+- Evaluation runs should log accuracy, macro F1, per-class precision/recall/F1,
+  and dataset or split names.
+- Artifact logging is opt-in via `log_artifacts: true`; never rely on W&B as the
+  only copy of checkpoints, metrics, predictions, or reports.
+- Do not commit W&B runtime folders, local run cache, API keys, private entity
+  names, or machine-specific credentials.
+
 ## 8. Source Code Rules
 
 - Reuse existing dataset, metric, config, IO, seed, logging, and training helpers
