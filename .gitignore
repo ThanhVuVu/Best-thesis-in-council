@@ -81,6 +81,8 @@ target/
 notebooks/
 ecg_thesis/notebooks/
 \ecg_thesis\notebooks
+!ecg_thesis/notebooks/
+!ecg_thesis/notebooks/phase2_clef_cdan_kaggle.ipynb
 
 # IPython
 profile_default/
