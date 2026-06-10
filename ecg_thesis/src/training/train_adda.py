@@ -17,6 +17,7 @@ from src.models.adda import ADDAClassifier
 from src.training.evaluate import predict_model
 from src.training.train import load_model_from_checkpoint
 from src.utils.io import ensure_dir
+from src.utils.wandb_logging import init_wandb, should_log_artifacts
 
 
 def train_adda(
@@ -50,6 +51,12 @@ def train_adda(
             "classifier_frozen": _all_frozen(model.classifier),
             "target_encoder_trainable": any(param.requires_grad for param in model.target_encoder.parameters()),
         },
+    )
+    wandb_run = init_wandb(
+        config,
+        job_type="train",
+        default_name=checkpoint_prefix,
+        extra_config={"method": "clef_adda", "source_checkpoint_epoch": source_ckpt.get("epoch")},
     )
 
     source_loader = DataLoader(
@@ -105,6 +112,10 @@ def train_adda(
         domain_true = []
         domain_pred = []
         target_as_source = []
+        source_domain_probs = []
+        target_domain_probs = []
+        target_entropies = []
+        target_pseudo_counts = np.zeros(int(config["data"]["num_classes"]), dtype=np.int64)
         source_iter = cycle(source_loader) if len(source_loader) < steps_per_epoch else iter(source_loader)
         target_iter = cycle(target_loader) if len(target_loader) < steps_per_epoch else iter(target_loader)
 
@@ -127,13 +138,18 @@ def train_adda(
             optimizer_d.step()
 
             with torch.no_grad():
-                pred_s = (torch.sigmoid(logits_s) >= 0.5).long()
-                pred_t = (torch.sigmoid(logits_t) >= 0.5).long()
+                prob_s = torch.sigmoid(logits_s)
+                prob_t = torch.sigmoid(logits_t)
+                pred_s = (prob_s >= 0.5).long()
+                pred_t = (prob_t >= 0.5).long()
                 domain_true.append(torch.cat([torch.ones_like(pred_s), torch.zeros_like(pred_t)]).cpu().numpy())
                 domain_pred.append(torch.cat([pred_s, pred_t]).cpu().numpy())
                 target_as_source.append(float(pred_t.float().mean().cpu()))
+                source_domain_probs.append(float(prob_s.mean().cpu()))
+                target_domain_probs.append(float(prob_t.mean().cpu()))
 
             _set_requires_grad(model.domain_discriminator, False)
+            model.domain_discriminator.eval()
             optimizer_m.zero_grad(set_to_none=True)
             f_t = model.forward_target_features(x_t)
             logits_t_for_m = model.forward_domain_from_features(f_t)
@@ -141,6 +157,15 @@ def train_adda(
             loss_m.backward()
             optimizer_m.step()
             _set_requires_grad(model.domain_discriminator, True)
+            model.domain_discriminator.train()
+
+            with torch.no_grad():
+                target_logits = model.classifier(f_t.detach())
+                target_probs = torch.softmax(target_logits, dim=1)
+                entropy = -(target_probs * torch.log(target_probs.clamp_min(1e-8))).sum(dim=1)
+                target_entropies.append(float(entropy.mean().cpu()))
+                pseudo = target_probs.argmax(dim=1).detach().cpu().numpy()
+                target_pseudo_counts += np.bincount(pseudo, minlength=len(target_pseudo_counts))
 
             losses_d.append(float(loss_d.detach().cpu()))
             losses_m.append(float(loss_m.detach().cpu()))
@@ -157,18 +182,27 @@ def train_adda(
             "loss_m": float(np.mean(losses_m)),
             "domain_accuracy": domain_accuracy,
             "target_as_source_rate": float(np.mean(target_as_source)),
+            "source_domain_prob_mean": float(np.mean(source_domain_probs)),
+            "target_domain_prob_mean": float(np.mean(target_domain_probs)),
+            "target_prediction_entropy": float(np.mean(target_entropies)),
             "source_val_accuracy": val_metrics["accuracy"],
             "source_val_macro_f1": val_metrics["macro_f1"],
             "target_encoder_lr": optimizer_m.param_groups[0]["lr"],
             "discriminator_lr": optimizer_d.param_groups[0]["lr"],
         }
+        for class_idx, class_name in enumerate(config["data"]["class_names"]):
+            row[f"target_pseudo_count_{class_name}"] = int(target_pseudo_counts[class_idx])
+            row[f"target_pseudo_rate_{class_name}"] = float(target_pseudo_counts[class_idx] / max(1, int(target_pseudo_counts.sum())))
         history.append(row)
         print(
             f"adda epoch {epoch}/{total_epochs}: loss_d={row['loss_d']:.4f}, "
             f"loss_m={row['loss_m']:.4f}, val_f1={row['source_val_macro_f1']:.4f}, "
-            f"domain_acc={row['domain_accuracy']:.4f}, target_as_source={row['target_as_source_rate']:.4f}",
+            f"domain_acc={row['domain_accuracy']:.4f}, target_as_source={row['target_as_source_rate']:.4f}, "
+            f"Dsrc={row['source_domain_prob_mean']:.4f}, Dtgt={row['target_domain_prob_mean']:.4f}, "
+            f"target_entropy={row['target_prediction_entropy']:.4f}",
             flush=True,
         )
+        wandb_run.log({f"train/{key}": value for key, value in row.items() if key != "epoch"}, step=epoch)
 
         if val_metrics["macro_f1"] > best_f1:
             best_f1 = val_metrics["macro_f1"]
@@ -188,6 +222,11 @@ def train_adda(
     _write_history_csv(history, log_dir / train_log_name)
     if backup_dir is not None:
         _copy_to_backup(log_dir / train_log_name, backup_dir)
+    wandb_run.summary_update({"best_epoch": best_epoch, "best_source_val_macro_f1": best_f1})
+    if should_log_artifacts(config):
+        wandb_run.log_artifact(best_path, name=f"{checkpoint_prefix}_best", artifact_type="model")
+        wandb_run.log_artifact(log_dir / train_log_name, name=f"{checkpoint_prefix}_train_log", artifact_type="train_log")
+    wandb_run.finish()
     return {
         "best_checkpoint": str(best_path),
         "latest_checkpoint": str(latest_path),
@@ -220,6 +259,7 @@ def build_adda_from_config(config: dict[str, Any], device: torch.device) -> tupl
         classifier=source_model.classifier,
         embedding_dim=int(source_model.embedding_dim),
         discriminator_hidden_dim=int(model_cfg.get("discriminator_hidden_dim", 256)),
+        discriminator_hidden_dims=model_cfg.get("discriminator_hidden_dims"),
         dropout=float(model_cfg.get("discriminator_dropout", model_cfg.get("dropout", 0.1))),
     )
     return model, source_ckpt

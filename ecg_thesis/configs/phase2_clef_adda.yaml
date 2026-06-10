@@ -29,7 +29,7 @@ model:
   head_hidden_dim: 256
   dropout: 0.1
   encoder_lr: 0.00001
-  discriminator_hidden_dim: 256
+  discriminator_hidden_dims: [256, 256]
   discriminator_dropout: 0.1
 
 training:
@@ -55,3 +55,14 @@ evaluation:
 visualization:
   embedding_method: umap
   max_points_per_domain: 3000
+
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: null
+    mode: null
+    tags: []
+    log_artifacts: false

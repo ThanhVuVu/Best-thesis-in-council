@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../ecg-foundation-model"
+		},
+		{
+			"path": "../../../phase2_clef_dann_outputs"
+		},
+		{
+			"path": "../../../phase2_clef_adda_outputs"
+		}
+	]
+}

@@ -4,7 +4,7 @@ import argparse
 
 from torch.utils.data import Subset
 
-from common import cfg_path, device_from_torch, load_phase1_config
+from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
 from src.data.datasets import ECGBeatDataset, subset_by_records
 from src.data.splits import mitbih_fit_val_records
 from src.training.train_adda import train_adda
@@ -21,9 +21,11 @@ def main() -> None:
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--clef-checkpoint", default=None)
     parser.add_argument("--source-init-checkpoint", default=None)
+    add_wandb_args(parser)
     args = parser.parse_args()
 
     config = load_phase1_config(args.config)
+    apply_wandb_overrides(config, args)
     if args.epochs is not None:
         config["training"]["epochs"] = int(args.epochs)
     if args.clef_checkpoint is not None:
