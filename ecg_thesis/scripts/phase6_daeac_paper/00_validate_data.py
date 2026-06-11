@@ -15,7 +15,7 @@ def main() -> None:
     parser.add_argument("--check-files", action="store_true", default=True)
     args = parser.parse_args()
     config = load_phase1_config(args.config)
-    input_key = str(config["data"].get("input_key", "x_daeac"))
+    input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
 

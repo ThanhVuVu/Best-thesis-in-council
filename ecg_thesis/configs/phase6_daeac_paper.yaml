@@ -20,7 +20,7 @@ data:
   source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
   target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
   target_test: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
-  input_key: x_daeac
+  input_key: auto
   label_key: y
   class_names: ["N", "S", "V", "F"]
   num_classes: 4

@@ -30,7 +30,7 @@ def main() -> None:
         config["adaptation"]["checkpoint_prefix"] = str(args.checkpoint_prefix)
     set_seed(int(config["seed"]))
     device = device_from_torch()
-    input_key = str(config["data"].get("input_key", "x_daeac"))
+    input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
     source_ds = DAEACDataset(cfg_path(config, "data", "source_train"), input_key=input_key, label_key=label_key, class_names=class_names)

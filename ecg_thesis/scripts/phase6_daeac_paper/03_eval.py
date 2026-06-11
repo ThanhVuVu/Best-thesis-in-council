@@ -34,7 +34,7 @@ def main() -> None:
         default_name=f"{args.method_name}_eval",
         extra_config={"checkpoint": str(args.checkpoint), "dataset": args.dataset},
     )
-    input_key = str(config["data"].get("input_key", "x_daeac"))
+    input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
     datasets = []

@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, Subset
 
 PAPER_CLASS_NAMES = ["N", "S", "V", "F"]
 REFERENCE_REPO_CLASS_NAMES = ["N", "V", "S", "F"]
+AUTO_INPUT_KEYS = ("x_daeac", "x_macnn", "x", "X", "inputs", "data", "samples", "beats")
 
 
 class DAEACDataset(Dataset):
@@ -17,7 +18,7 @@ class DAEACDataset(Dataset):
     def __init__(
         self,
         npz_path: str | Path,
-        input_key: str = "x_daeac",
+        input_key: str = "auto",
         label_key: str = "y",
         require_labels: bool = True,
         return_index: bool = False,
@@ -25,7 +26,7 @@ class DAEACDataset(Dataset):
         class_names: list[str] | None = None,
     ):
         self.path = Path(npz_path)
-        self.input_key = str(input_key)
+        requested_input_key = str(input_key)
         self.label_key = str(label_key)
         self.require_labels = bool(require_labels)
         self.return_index = bool(return_index)
@@ -33,9 +34,8 @@ class DAEACDataset(Dataset):
         self.class_names = list(class_names or PAPER_CLASS_NAMES)
 
         self.data = np.load(self.path, allow_pickle=True)
-        if self.input_key not in self.data:
-            raise KeyError(f"{self.path} does not contain input key '{self.input_key}'.")
-        self.x = self.data[self.input_key].astype(np.float32)
+        self.input_key = _resolve_input_key(self.data, self.path, requested_input_key)
+        self.x = _normalize_input_array(self.data[self.input_key].astype(np.float32), self.path, self.input_key)
         _validate_input_shape(self.x, self.path, self.input_key)
 
         self.y: np.ndarray | None = None
@@ -94,6 +94,9 @@ class DAEACDataset(Dataset):
             return self.data["record_id"]
         return None
 
+    def close(self) -> None:
+        self.data.close()
+
 
 class DAEACTargetUnlabeledDataset(DAEACDataset):
     """Target adaptation dataset that intentionally never exposes target labels."""
@@ -101,7 +104,7 @@ class DAEACTargetUnlabeledDataset(DAEACDataset):
     def __init__(
         self,
         npz_path: str | Path,
-        input_key: str = "x_daeac",
+        input_key: str = "auto",
         label_key: str = "y",
         return_index: bool = True,
         class_names: list[str] | None = None,
@@ -132,7 +135,7 @@ def class_counts_from_dataset(dataset: DAEACDataset, num_classes: int = 4) -> np
 
 def inspect_daeac_npz(
     npz_path: str | Path,
-    input_key: str = "x_daeac",
+    input_key: str = "auto",
     label_key: str = "y",
     class_names: list[str] | None = None,
     require_labels: bool = True,
@@ -148,7 +151,7 @@ def inspect_daeac_npz(
     records = ds.records
     return {
         "path": str(ds.path),
-        "input_key": input_key,
+        "input_key": ds.input_key,
         "shape": list(ds.x.shape),
         "has_labels": ds.y is not None,
         "class_names": ds.class_names,
@@ -156,6 +159,45 @@ def inspect_daeac_npz(
         "num_records": int(len(set(records.astype(str)))) if records is not None else None,
         "num_samples": int(len(ds)),
     }
+
+
+def _resolve_input_key(data: np.lib.npyio.NpzFile, path: Path, requested: str) -> str:
+    if requested != "auto" and requested in data:
+        return requested
+
+    detected = _detect_input_key(data)
+    if detected is not None:
+        return detected
+
+    available = ", ".join(data.files)
+    candidates = ", ".join(AUTO_INPUT_KEYS)
+    if requested == "auto":
+        raise KeyError(f"{path}: could not auto-detect DAEAC input key. Available keys: [{available}]. Tried: [{candidates}].")
+    raise KeyError(
+        f"{path} does not contain input key '{requested}', and auto-detection failed. "
+        f"Available keys: [{available}]. Tried: [{candidates}]."
+    )
+
+
+def _detect_input_key(data: np.lib.npyio.NpzFile) -> str | None:
+    for key in AUTO_INPUT_KEYS:
+        if key in data and _looks_like_daeac_input(data[key]):
+            return key
+    for key in data.files:
+        if _looks_like_daeac_input(data[key]):
+            return key
+    return None
+
+
+def _looks_like_daeac_input(value: np.ndarray) -> bool:
+    shape = tuple(value.shape)
+    return (len(shape) == 4 and shape[1:] == (1, 3, 128)) or (len(shape) == 3 and shape[1:] == (3, 128))
+
+
+def _normalize_input_array(x: np.ndarray, path: Path, input_key: str) -> np.ndarray:
+    if x.ndim == 3 and tuple(x.shape[1:]) == (3, 128):
+        return x[:, None, :, :]
+    return x
 
 
 def _validate_input_shape(x: np.ndarray, path: Path, input_key: str) -> None:

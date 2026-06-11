@@ -1,8 +1,8 @@
 # Phase 6 DAEAC Paper-Faithful Kaggle Guide
 
-This workflow assumes the DAEAC preprocessed `.npz` files already contain
-`x_daeac` or the configured input key with shape `[N, 1, 3, 128]`, labels in
-paper order `N=0, S=1, V=2, F=3`, and optional `class_names=["N","S","V","F"]`.
+This workflow assumes the DAEAC preprocessed `.npz` files already contain a
+DAEAC input array with shape `[N, 1, 3, 128]` or `[N, 3, 128]`, labels in paper
+order `N=0, S=1, V=2, F=3`, and optional `class_names=["N","S","V","F"]`.
 
 ## Expected Kaggle Layout
 
@@ -35,8 +35,9 @@ svdb_all_daeac.npz
 
 The default config runs the MITDB DS1 -> DS2 paper experiment.
 
-If your files use different names or `x_macnn` instead of `x_daeac`, edit
-`configs/phase6_daeac_paper.yaml` in the notebook before running validation.
+The default config uses `input_key: auto`, which detects common keys such as
+`x_daeac`, `x_macnn`, `x`, `X`, `inputs`, `data`, `samples`, or `beats`. Edit
+`configs/phase6_daeac_paper.yaml` only if you want to force one specific key.
 
 ## Smoke Run
 
