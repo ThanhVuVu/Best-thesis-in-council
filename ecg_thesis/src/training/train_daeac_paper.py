@@ -18,6 +18,7 @@ from src.training.daeac_losses import (
     separating_loss,
     weighted_cross_entropy_from_logits,
 )
+from src.training.mk_mmd import center_cluster_mk_mmd_loss, center_pair_reference_distance
 from src.training.metrics import classification_metrics
 from src.utils.io import ensure_dir
 from src.utils.wandb_logging import init_wandb
@@ -142,6 +143,7 @@ def adapt_daeac(
     center_memory.source = compute_global_source_centers(model, source_loader, device, center_memory.num_classes)
     center_memory.target = compute_global_target_centers(model, target_loader, device, center_memory.num_classes, thresholds)
     center_memory.refresh_mixed()
+    _prepare_center_mkmmd_config(cfg, center_memory)
     aux_classifier = ClassifierH(
         feature_dim=int(config["model"]["feature_dim"]),
         num_classes=int(config["data"]["num_classes"]),
@@ -195,7 +197,7 @@ def adapt_daeac(
                 gamma=float(cfg["center_ema_gamma"]),
             )
 
-            loss_align = cluster_aligning_loss(source_for_loss, target_for_loss, distance_fn, device)
+            loss_align = _cluster_align_loss(source_for_loss, target_for_loss, cfg, distance_fn, device)
             if z_t.numel() > 0:
                 z_mix = torch.cat([z_s, z_t], dim=0)
                 y_mix = torch.cat([y_s, selected_pseudo_t], dim=0)
@@ -473,6 +475,35 @@ def _threshold_tensor(config: dict[str, Any], cfg: dict[str, Any], device: torch
     class_names = list(config["data"]["class_names"])
     values = [float(cfg["pseudo_thresholds"][name]) for name in class_names]
     return torch.as_tensor(values, dtype=torch.float32, device=device)
+
+
+def _cluster_align_loss(
+    source_centers: list[torch.Tensor | None],
+    target_centers: list[torch.Tensor | None],
+    cfg: dict[str, Any],
+    distance_fn,
+    device: torch.device,
+) -> torch.Tensor:
+    align_loss = str(cfg.get("align_loss", "l2")).lower()
+    if align_loss in {"l2", "distance"}:
+        return cluster_aligning_loss(source_centers, target_centers, distance_fn, device)
+    if align_loss == "mkmmd_center":
+        return center_cluster_mk_mmd_loss(source_centers, target_centers, dict(cfg.get("mkmmd", {})), device)
+    raise ValueError(f"Unknown DAEAC align_loss: {align_loss}")
+
+
+def _prepare_center_mkmmd_config(cfg: dict[str, Any], center_memory: CenterMemory) -> None:
+    if str(cfg.get("align_loss", "l2")).lower() != "mkmmd_center":
+        return
+    mkmmd_cfg = cfg.setdefault("mkmmd", {})
+    mode = str(mkmmd_cfg.get("gamma_mode", "adaptive")).lower()
+    if mode != "fixed_from_initial_centers":
+        return
+    gamma_min = float(mkmmd_cfg.get("gamma_min", 1.0e-6))
+    reference = center_pair_reference_distance(center_memory.source, center_memory.target, gamma_min=gamma_min)
+    fixed_gamma = float(reference.detach().cpu()) if reference is not None else gamma_min
+    mkmmd_cfg["fixed_gamma"] = fixed_gamma
+    print(f"Center MK-MMD fixed_gamma={fixed_gamma:.6g}")
 
 
 def _cycle(loader: DataLoader):
