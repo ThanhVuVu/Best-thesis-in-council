@@ -22,7 +22,7 @@ def main() -> None:
         "| Method | Dataset | Accuracy | Macro-F1 | N-F1 | S-F1 | V-F1 | F-F1 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for path in sorted(metrics_dir.glob("*_target_test*_metrics.json")):
+    for path in sorted(metrics_dir.glob("*_metrics.json")):
         metrics = read_json(path)
         per = metrics.get("per_class", {})
         lines.append(

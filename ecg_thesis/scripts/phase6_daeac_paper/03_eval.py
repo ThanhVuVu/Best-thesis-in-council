@@ -19,7 +19,11 @@ def main() -> None:
     parser.add_argument("--config", default="configs/phase6_daeac_paper.yaml")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--method-name", default="daeac")
-    parser.add_argument("--dataset", choices=["source", "target", "both"], default="target")
+    parser.add_argument(
+        "--dataset",
+        default="target",
+        help="One of source, target, both, external, all, or a key from data.external_targets such as incart/svdb.",
+    )
     parser.add_argument("--max-samples", type=int, default=None)
     add_wandb_args(parser)
     args = parser.parse_args()
@@ -37,11 +41,7 @@ def main() -> None:
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
-    datasets = []
-    if args.dataset in {"source", "both"}:
-        datasets.append(("source_eval", cfg_path(config, "data", "source_eval")))
-    if args.dataset in {"target", "both"}:
-        datasets.append(("target_test", cfg_path(config, "data", "target_test")))
+    datasets = _eval_datasets(config, args.dataset)
     for name, path in datasets:
         ds = DAEACDataset(path, input_key=input_key, label_key=label_key, class_names=class_names)
         ds = subset_first(ds, args.max_samples)
@@ -60,6 +60,30 @@ def main() -> None:
         log_eval_metrics(wandb_run, metrics, prefix=f"eval/{args.method_name}/{name}")
         print(stem, metrics["paper_metrics"])
     wandb_run.finish()
+
+
+def _eval_datasets(config: dict, dataset: str) -> list[tuple[str, Path]]:
+    external = dict(config.get("data", {}).get("external_targets", {}))
+    selected: list[tuple[str, Path]] = []
+    if dataset in {"source", "both", "all"}:
+        selected.append(("source_eval", cfg_path(config, "data", "source_eval")))
+    if dataset in {"target", "both", "all"}:
+        selected.append(("target_test", cfg_path(config, "data", "target_test")))
+    if dataset in {"external", "all"}:
+        selected.extend((name, _resolve_data_path(config, value)) for name, value in external.items())
+    elif dataset in external:
+        selected.append((dataset, _resolve_data_path(config, external[dataset])))
+    if not selected:
+        valid = ["source", "target", "both", "external", "all", *external.keys()]
+        raise ValueError(f"Unknown dataset '{dataset}'. Valid values: {valid}")
+    return selected
+
+
+def _resolve_data_path(config: dict, value: str | Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return Path(config["_base_dir"]) / path
 
 
 def _write_predictions(path: Path, result: dict, class_names: list[str]) -> None:

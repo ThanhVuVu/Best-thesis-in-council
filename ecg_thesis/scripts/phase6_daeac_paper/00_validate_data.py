@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import torch
 
@@ -43,6 +44,22 @@ def main() -> None:
             require_labels=require_labels,
         )
         print(f"{key}: {summary}")
+
+    for name, value in dict(config["data"].get("external_targets", {})).items():
+        path = Path(value)
+        if not path.is_absolute():
+            path = Path(config["_base_dir"]) / path
+        if not path.exists():
+            print(f"external_targets.{name}: skipped missing file {path}")
+            continue
+        summary = inspect_daeac_npz(
+            path,
+            input_key=input_key,
+            label_key=label_key,
+            class_names=class_names,
+            require_labels=True,
+        )
+        print(f"external_targets.{name}: {summary}")
 
     target = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),
