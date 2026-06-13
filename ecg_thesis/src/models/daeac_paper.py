@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 class AtrousConvBNReLU(nn.Module):
@@ -135,15 +136,25 @@ class DAEACFeatureExtractor(nn.Module):
         self.feature_dim = int(feature_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        layers = self.forward_layers(x)
+        return layers["gap_embed"]
+
+    def forward_layers(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         x = self.input_conv(x)
         x = self.aspp_se_1(x)
         x = self.residual_1(x)
         x = self.aspp_se_2(x)
         x = self.residual_2(x)
         x = self.transition(x)
+        transition_gap = _gap_flatten_2d(x)
         x = self.final_aspp_se(x)
-        x = self.gap(x)
-        return torch.flatten(x, 1)
+        final_aspp_gap = _gap_flatten_2d(x)
+        gap_embed = torch.flatten(self.gap(x), 1)
+        return {
+            "transition_gap": transition_gap,
+            "final_aspp_gap": final_aspp_gap,
+            "gap_embed": gap_embed,
+        }
 
 
 class ClassifierH(nn.Module):
@@ -187,6 +198,9 @@ class DAEACNetwork(nn.Module):
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
         return self.feature_extractor(x)
 
+    def extract_feature_layers(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        return self.feature_extractor.forward_layers(x)
+
     def forward(self, x: torch.Tensor, return_logits: bool = False):
         features = self.extract_features(x)
         logits, probs = self.classifier(features, return_logits=True)
@@ -200,3 +214,7 @@ class DAEACNetwork(nn.Module):
             nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
+
+
+def _gap_flatten_2d(x: torch.Tensor) -> torch.Tensor:
+    return F.adaptive_avg_pool2d(x, 1).flatten(1)
