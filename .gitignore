@@ -239,6 +239,7 @@ ecg_phase1/data/processed/
 ecg_phase1/outputs/
 ecg_thesis/data/processed/
 ecg_thesis/outputs/
+ecg_thesis/.codex_tmp_*/
 *.npz
 *.pt
 *.pth
