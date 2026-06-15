@@ -1,0 +1,35 @@
+seed: 42
+
+paths:
+  output_dir: outputs/phase6_daeac_diagnostics
+
+data:
+  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+  external_targets:
+    incart: data/processed/phase6_daeac_paper/incart_all_daeac.npz
+    svdb: data/processed/phase6_daeac_paper/svdb_all_daeac.npz
+  input_key: auto
+  label_key: y
+  class_names: ["N", "S", "V", "F"]
+  num_classes: 4
+
+training: {}
+
+analysis:
+  base_config: configs/phase6_daeac_hybrid_mkmmd.yaml
+  method_name: daeac_hybrid_mkmmd_best
+  default_checkpoint: outputs/phase6_daeac_hybrid_mkmmd/checkpoints/daeac_hybrid_mkmmd_best.pt
+  train_summary: outputs/phase6_daeac_hybrid_mkmmd/metrics/daeac_hybrid_mkmmd_train_summary.json
+  datasets: ["source_eval", "target_test", "incart", "svdb"]
+  n_bins: 15
+  focus_classes: ["F", "S"]
+  error_pairs:
+    - ["N", "F"]
+    - ["F", "N"]
+    - ["S", "N"]
+    - ["V", "N"]
+    - ["S", "V"]
+    - ["V", "S"]
+  morphology_top_k: 24
+  embedding_max_samples: 10000
