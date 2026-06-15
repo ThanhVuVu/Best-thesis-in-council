@@ -12,10 +12,10 @@ from torch.utils.data import DataLoader
 from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset
 from src.models.daeac_paper import ClassifierH
 from src.training.daeac_losses import (
+    build_daeac_classification_loss,
     compacting_loss,
     distance_from_name,
     separating_loss,
-    weighted_cross_entropy_from_logits,
 )
 from src.training.dan_mkmmd import beta_from_config, linear_mkmmd_loss
 from src.training.mcc_loss import minimum_class_confusion_loss
@@ -59,6 +59,7 @@ def train_daeac_hybrid_mkmmd_mcc(
     target_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
+    cls_loss_fn = build_daeac_classification_loss(cfg, int(config["data"]["num_classes"]), class_weights).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
@@ -110,7 +111,7 @@ def train_daeac_hybrid_mkmmd_mcc(
             z_t_all = target_layers["gap_embed"]
             logits_s, _ = model.classifier(z_s, return_logits=True)
             logits_t, _ = model.classifier(z_t_all, return_logits=True)
-            loss_cls = weighted_cross_entropy_from_logits(logits_s, y_s, class_weights)
+            loss_cls = cls_loss_fn(logits_s, y_s)
             loss_mmd, layer_losses = _multi_layer_mkmmd_loss(source_layers, target_layers, layer_weights, gammas, beta)
             loss_mcc, mcc_diag = minimum_class_confusion_loss(
                 logits_t,

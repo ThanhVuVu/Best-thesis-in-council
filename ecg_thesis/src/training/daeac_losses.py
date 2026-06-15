@@ -1,7 +1,43 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
+from torch import nn
 import torch.nn.functional as F
+
+
+class CustomFocalLoss(nn.Module):
+    def __init__(self, alpha: torch.Tensor | list[float] | tuple[float, ...] | None = None, gamma: float = 2.0, reduction: str = "mean"):
+        super().__init__()
+        if reduction not in {"mean", "sum", "none"}:
+            raise ValueError(f"Unsupported focal loss reduction: {reduction}")
+        self.gamma = float(gamma)
+        self.reduction = str(reduction)
+        if alpha is None:
+            self.register_buffer("alpha", None)
+        else:
+            self.register_buffer("alpha", torch.as_tensor(alpha, dtype=torch.float32))
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        if logits.ndim != 2:
+            raise ValueError(f"Focal loss expects logits shaped [B, C], got {tuple(logits.shape)}.")
+        if labels.ndim != 1:
+            raise ValueError(f"Focal loss expects labels shaped [B], got {tuple(labels.shape)}.")
+        ce_loss = F.cross_entropy(logits, labels, reduction="none")
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1.0 - pt) ** self.gamma) * ce_loss
+        if self.alpha is not None:
+            if self.alpha.numel() != logits.size(1):
+                raise ValueError(
+                    f"Focal alpha length must match num_classes={logits.size(1)}, got {self.alpha.numel()}."
+                )
+            focal_loss = self.alpha.to(device=logits.device, dtype=logits.dtype)[labels] * focal_loss
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        if self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
 
 
 def weighted_cross_entropy_from_logits(
@@ -10,6 +46,23 @@ def weighted_cross_entropy_from_logits(
     class_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     return F.cross_entropy(logits, labels, weight=class_weights, reduction="mean")
+
+
+def build_daeac_classification_loss(
+    cfg: dict[str, Any],
+    num_classes: int,
+    class_weights: torch.Tensor | None = None,
+) -> nn.Module:
+    source_loss = str(cfg.get("source_loss", "weighted_ce")).lower()
+    if source_loss == "weighted_ce":
+        return nn.CrossEntropyLoss(weight=class_weights)
+    if source_loss == "focal":
+        alpha_cfg = cfg.get("focal_alpha")
+        alpha = class_weights if alpha_cfg is None else torch.as_tensor(alpha_cfg, dtype=torch.float32)
+        if alpha is not None and int(alpha.numel()) != int(num_classes):
+            raise ValueError(f"focal_alpha length must match num_classes={num_classes}, got {int(alpha.numel())}.")
+        return CustomFocalLoss(alpha=alpha, gamma=float(cfg.get("focal_gamma", 2.0)))
+    raise ValueError(f"Unsupported DAEAC source_loss: {source_loss}")
 
 
 def l2_distance(x: torch.Tensor, y: torch.Tensor, dim: int = -1, mean: bool = True) -> torch.Tensor:

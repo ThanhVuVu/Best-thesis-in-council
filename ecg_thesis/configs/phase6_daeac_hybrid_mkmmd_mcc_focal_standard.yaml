@@ -1,0 +1,93 @@
+seed: 42
+
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: phase6_daeac_hybrid_mkmmd_mcc_focal_standard
+    mode: null
+    tags: ["phase6", "daeac", "hybrid", "dan", "mkmmd", "mcc", "focal_standard"]
+    log_artifacts: false
+
+paths:
+  processed_dir: data/processed/phase6_daeac_paper
+  output_dir: outputs/phase6_daeac_hybrid_mkmmd_mcc_focal_standard
+
+data:
+  source_train: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
+  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+  external_targets:
+    incart: data/processed/phase6_daeac_paper/incart_all_daeac.npz
+    svdb: data/processed/phase6_daeac_paper/svdb_all_daeac.npz
+  input_key: auto
+  label_key: y
+  class_names: ["N", "S", "V", "F"]
+  num_classes: 4
+
+model:
+  num_classes: 4
+  input_channels: 1
+  initial_channels: 4
+  dilations: [1, 6, 12, 18]
+  feature_dim: 256
+  se_reduction: 16
+  dropout: 0.0
+
+training:
+  checkpoint_prefix: daeac_base
+  epochs: 300
+  batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: true
+
+adaptation:
+  checkpoint_prefix: daeac_hybrid_mkmmd_mcc_focal_standard
+  init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
+  epochs: 30
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.0005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  source_loss: focal
+  focal_gamma: 2.0
+  focal_alpha: null
+  use_class_weights: false
+  beta1: 0.1
+  beta2: 0.1
+  lambda_mmd: 0.05
+  center_ema_gamma: 0.1
+  margin: 5.0
+  distance: l2
+  align_loss: l2
+  pseudo_thresholds:
+    N: 0.995
+    S: 0.99
+    V: 0.995
+    F: 0.9985
+  mcc:
+    mu: 0.05
+    temperature: 2.5
+  mkmmd:
+    estimator: linear_quad
+    kernel_num: 33
+    kernel_mul: 1.41421356237
+    gamma_mode: fixed_median_subset
+    gamma_sample_size: 4096
+    gamma_min: 1.0e-6
+    beta: uniform
+    layers:
+      transition_gap: 0.5
+      gap_embed: 1.0
+
+evaluation:
+  batch_size: 256
+
