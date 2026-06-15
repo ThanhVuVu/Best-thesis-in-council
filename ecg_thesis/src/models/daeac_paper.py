@@ -4,6 +4,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from src.models.daeac_temporal_heads import AttnResTransformerHead, TCNAttentionHead, TemporalIdentityPool
+
 
 class AtrousConvBNReLU(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, dilation: int):
@@ -116,6 +118,15 @@ class DAEACFeatureExtractor(nn.Module):
         feature_dim: int = 256,
         dilations: tuple[int, ...] = (1, 6, 12, 18),
         se_reduction: int = 16,
+        temporal_head: str = "none",
+        temporal_channels: int | None = None,
+        temporal_dilations: tuple[int, ...] = (1, 2, 4),
+        temporal_dropout: float = 0.1,
+        temporal_kernel_size: int = 3,
+        temporal_layers: int = 4,
+        temporal_heads: int = 4,
+        temporal_ffn_dim: int = 512,
+        attnres_block_layers: int = 2,
     ):
         super().__init__()
         dila_num = len(dilations)
@@ -124,6 +135,11 @@ class DAEACFeatureExtractor(nn.Module):
         c3 = initial_channels * dila_num * dila_num * dila_num
         if c3 != feature_dim:
             raise ValueError(f"Expected final ASPP channels to equal feature_dim={feature_dim}, got {c3}.")
+        if temporal_channels is not None and int(temporal_channels) != int(feature_dim):
+            raise ValueError(
+                "DAEAC temporal_channels must equal feature_dim because the temporal head "
+                f"receives final ASPP channels directly: {temporal_channels} vs {feature_dim}."
+            )
 
         self.input_conv = nn.Conv2d(input_channels, initial_channels, kernel_size=(3, 3), padding=(0, 1), bias=False)
         self.aspp_se_1 = ASPPSEBlock(initial_channels, initial_channels, se_reduction=4, dilations=dilations)
@@ -132,7 +148,18 @@ class DAEACFeatureExtractor(nn.Module):
         self.residual_2 = ResidualConvBlock(c2, stride=2)
         self.transition = nn.Sequential(nn.BatchNorm2d(c2), nn.ReLU(inplace=True))
         self.final_aspp_se = ASPPSEBlock(c2, c2, se_reduction=se_reduction, dilations=dilations)
-        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.temporal_head_name = str(temporal_head).lower()
+        self.temporal_head = _build_temporal_head(
+            name=self.temporal_head_name,
+            feature_dim=feature_dim,
+            temporal_dilations=temporal_dilations,
+            temporal_dropout=float(temporal_dropout),
+            temporal_kernel_size=int(temporal_kernel_size),
+            temporal_layers=int(temporal_layers),
+            temporal_heads=int(temporal_heads),
+            temporal_ffn_dim=int(temporal_ffn_dim),
+            attnres_block_layers=int(attnres_block_layers),
+        )
         self.feature_dim = int(feature_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -149,7 +176,7 @@ class DAEACFeatureExtractor(nn.Module):
         transition_gap = _gap_flatten_2d(x)
         x = self.final_aspp_se(x)
         final_aspp_gap = _gap_flatten_2d(x)
-        gap_embed = torch.flatten(self.gap(x), 1)
+        gap_embed = self.temporal_head(x.squeeze(2))
         return {
             "transition_gap": transition_gap,
             "final_aspp_gap": final_aspp_gap,
@@ -181,6 +208,15 @@ class DAEACNetwork(nn.Module):
         dilations: tuple[int, ...] = (1, 6, 12, 18),
         se_reduction: int = 16,
         dropout: float = 0.0,
+        temporal_head: str = "none",
+        temporal_channels: int | None = None,
+        temporal_dilations: tuple[int, ...] = (1, 2, 4),
+        temporal_dropout: float = 0.1,
+        temporal_kernel_size: int = 3,
+        temporal_layers: int = 4,
+        temporal_heads: int = 4,
+        temporal_ffn_dim: int = 512,
+        attnres_block_layers: int = 2,
     ):
         super().__init__()
         self.feature_extractor = DAEACFeatureExtractor(
@@ -189,6 +225,15 @@ class DAEACNetwork(nn.Module):
             feature_dim=feature_dim,
             dilations=dilations,
             se_reduction=se_reduction,
+            temporal_head=temporal_head,
+            temporal_channels=temporal_channels,
+            temporal_dilations=temporal_dilations,
+            temporal_dropout=temporal_dropout,
+            temporal_kernel_size=temporal_kernel_size,
+            temporal_layers=temporal_layers,
+            temporal_heads=temporal_heads,
+            temporal_ffn_dim=temporal_ffn_dim,
+            attnres_block_layers=attnres_block_layers,
         )
         self.classifier = ClassifierH(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
         self.feature_dim = int(feature_dim)
@@ -210,10 +255,45 @@ class DAEACNetwork(nn.Module):
 
     @staticmethod
     def _init_weights(module: nn.Module) -> None:
+        if bool(getattr(module, "_daeac_keep_zero_init", False)):
+            return
         if isinstance(module, (nn.Conv2d, nn.Linear)):
             nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
             if getattr(module, "bias", None) is not None:
                 nn.init.zeros_(module.bias)
+
+
+def _build_temporal_head(
+    name: str,
+    feature_dim: int,
+    temporal_dilations: tuple[int, ...],
+    temporal_dropout: float,
+    temporal_kernel_size: int,
+    temporal_layers: int,
+    temporal_heads: int,
+    temporal_ffn_dim: int,
+    attnres_block_layers: int,
+) -> nn.Module:
+    normalized = str(name).lower()
+    if normalized in {"", "none", "gap", "identity"}:
+        return TemporalIdentityPool()
+    if normalized == "tcn_attention":
+        return TCNAttentionHead(
+            channels=int(feature_dim),
+            dilations=temporal_dilations,
+            dropout=float(temporal_dropout),
+            kernel_size=int(temporal_kernel_size),
+        )
+    if normalized == "attnres_transformer":
+        return AttnResTransformerHead(
+            d_model=int(feature_dim),
+            num_layers=int(temporal_layers),
+            nhead=int(temporal_heads),
+            ffn_dim=int(temporal_ffn_dim),
+            dropout=float(temporal_dropout),
+            block_layers=int(attnres_block_layers),
+        )
+    raise ValueError(f"Unknown DAEAC temporal_head: {name}")
 
 
 def _gap_flatten_2d(x: torch.Tensor) -> torch.Tensor:

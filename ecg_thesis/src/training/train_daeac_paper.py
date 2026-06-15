@@ -34,6 +34,17 @@ def build_daeac_model(config: dict[str, Any], device: torch.device) -> DAEACNetw
         dilations=tuple(int(v) for v in model_cfg.get("dilations", [1, 6, 12, 18])),
         se_reduction=int(model_cfg.get("se_reduction", 16)),
         dropout=float(model_cfg.get("dropout", 0.0)),
+        temporal_head=str(model_cfg.get("temporal_head", "none")),
+        temporal_channels=(
+            int(model_cfg["temporal_channels"]) if "temporal_channels" in model_cfg else None
+        ),
+        temporal_dilations=tuple(int(v) for v in model_cfg.get("temporal_dilations", [1, 2, 4])),
+        temporal_dropout=float(model_cfg.get("temporal_dropout", 0.1)),
+        temporal_kernel_size=int(model_cfg.get("temporal_kernel_size", 3)),
+        temporal_layers=int(model_cfg.get("temporal_layers", 4)),
+        temporal_heads=int(model_cfg.get("temporal_heads", 4)),
+        temporal_ffn_dim=int(model_cfg.get("temporal_ffn_dim", 512)),
+        attnres_block_layers=int(model_cfg.get("attnres_block_layers", 2)),
     ).to(device)
 
 
