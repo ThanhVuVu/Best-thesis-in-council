@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from common import cfg_path, load_phase1_config
-from src.data.daeac_dataset import inspect_daeac_npz
+from src.data.daeac_dataset import DAEACDataset, inspect_daeac_npz, split_daeac_source_fit_val
 from src.utils.io import ensure_dir, write_json
 
 
@@ -37,6 +37,15 @@ def main() -> None:
             class_names=class_names,
             require_labels=require_labels,
         )
+
+    if required["source_train"].resolve() == required["source_eval"].resolve():
+        source_for_split = DAEACDataset(
+            required["source_train"],
+            input_key=input_key,
+            label_key=label_key,
+            class_names=class_names,
+        )
+        _, _, summary["source_split"] = split_daeac_source_fit_val(source_for_split)
 
     for name, value in dict(config.get("data", {}).get("external_targets", {})).items():
         path = _resolve_data_path(config, value)

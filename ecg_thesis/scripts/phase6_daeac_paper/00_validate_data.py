@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from common import cfg_path, load_phase1_config
-from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz
+from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, split_daeac_source_fit_val
 from src.models.daeac_paper import DAEACNetwork
 
 
@@ -60,6 +60,13 @@ def main() -> None:
             require_labels=True,
         )
         print(f"external_targets.{name}: {summary}")
+
+    source_train_path = cfg_path(config, "data", "source_train")
+    source_eval_path = cfg_path(config, "data", "source_eval")
+    if source_train_path.resolve() == source_eval_path.resolve():
+        source_for_split = DAEACDataset(source_train_path, input_key=input_key, label_key=label_key, class_names=class_names)
+        _, _, split_summary = split_daeac_source_fit_val(source_for_split)
+        print(f"source_train/source_eval share one file; record-wise split will be used: {split_summary}")
 
     target = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),

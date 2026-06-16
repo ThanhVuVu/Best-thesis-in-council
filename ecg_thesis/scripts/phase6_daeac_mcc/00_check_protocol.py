@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from common import cfg_path, load_phase1_config
-from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz
+from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, split_daeac_source_fit_val
 from src.utils.io import write_json
 
 
@@ -33,6 +33,7 @@ def main() -> None:
     _check_dataset_paths(config, report)
     _check_train_scripts_do_not_load_eval_data(config, report)
     _inspect_all_npz(config, class_names, input_key, label_key, report)
+    _check_source_fit_val_split(config, class_names, input_key, label_key, report)
     _check_unlabeled_dataset_contract(config, class_names, input_key, label_key, report)
     if not args.skip_overlap:
         _check_target_overlap(config, input_key, label_key, class_names, bool(args.strict), report)
@@ -108,6 +109,35 @@ def _inspect_all_npz(
         )
     report["dataset_summaries"] = summaries
     report["checks"].append("dataset_shapes_labels_and_class_order_valid")
+
+
+def _check_source_fit_val_split(
+    config: dict[str, Any],
+    class_names: list[str],
+    input_key: str,
+    label_key: str,
+    report: dict[str, Any],
+) -> None:
+    source_train = cfg_path(config, "data", "source_train")
+    source_eval = cfg_path(config, "data", "source_eval")
+    if source_train.resolve() != source_eval.resolve():
+        report["source_fit_val_split"] = {
+            "source_path": str(source_train),
+            "eval_path": str(source_eval),
+            "split_applied": False,
+        }
+        report["checks"].append("source_train_and_source_eval_are_distinct_paths")
+        return
+
+    source = DAEACDataset(source_train, input_key=input_key, label_key=label_key, class_names=class_names)
+    _, _, split_summary = split_daeac_source_fit_val(source)
+    report["source_fit_val_split"] = {
+        **split_summary,
+        "source_path": str(source_train),
+        "eval_path": str(source_eval),
+        "split_applied": True,
+    }
+    report["checks"].append("source_train_source_eval_same_file_record_split_checked")
 
 
 def _check_unlabeled_dataset_contract(

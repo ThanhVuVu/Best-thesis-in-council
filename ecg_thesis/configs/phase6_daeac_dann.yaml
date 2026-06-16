@@ -29,6 +29,11 @@ data:
   class_names: ["N", "S", "V", "F"]
   num_classes: 4
 
+source_split:
+  enabled: true
+  mode: mitbih_fit_val_records
+  note: "When source_train and source_eval point to the same DS1 file, split source by MIT-BIH records: first 18 train records for fit, last 4 train records for validation."
+
 model:
   num_classes: 4
   input_channels: 1

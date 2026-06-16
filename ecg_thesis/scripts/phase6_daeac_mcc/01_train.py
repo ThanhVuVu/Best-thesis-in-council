@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
-from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, subset_first
+from src.data.daeac_dataset import DAEACTargetUnlabeledDataset, load_daeac_source_fit_val, subset_first
 from src.training.train_daeac_mcc import train_daeac_mcc
 from src.utils.io import ensure_dir, write_json
 from src.utils.seed import set_seed
@@ -34,8 +34,14 @@ def main() -> None:
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
-    source_ds = DAEACDataset(cfg_path(config, "data", "source_train"), input_key=input_key, label_key=label_key, class_names=class_names)
-    val_ds = DAEACDataset(cfg_path(config, "data", "source_eval"), input_key=input_key, label_key=label_key, class_names=class_names)
+    source_ds, val_ds, split_summary = load_daeac_source_fit_val(
+        cfg_path(config, "data", "source_train"),
+        cfg_path(config, "data", "source_eval"),
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+    )
+    print(f"DAEAC source fit/validation split: {split_summary}")
     target_ds = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),
         input_key=input_key,

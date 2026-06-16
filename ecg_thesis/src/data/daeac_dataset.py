@@ -7,6 +7,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
 
+from src.data.splits import mitbih_fit_val_records
+
 PAPER_CLASS_NAMES = ["N", "S", "V", "F"]
 REFERENCE_REPO_CLASS_NAMES = ["N", "V", "S", "F"]
 AUTO_INPUT_KEYS = ("x_daeac", "x_macnn", "x", "X", "inputs", "data", "samples", "beats")
@@ -125,6 +127,68 @@ def subset_first(dataset: Dataset, max_samples: int | None) -> Dataset:
         return dataset
     n = min(int(max_samples), len(dataset))
     return Subset(dataset, list(range(n)))
+
+
+def load_daeac_source_fit_val(
+    source_path: str | Path,
+    eval_path: str | Path,
+    input_key: str = "auto",
+    label_key: str = "y",
+    class_names: list[str] | None = None,
+    split_same_path: bool = True,
+) -> tuple[Dataset, Dataset, dict[str, Any]]:
+    source_ds = DAEACDataset(source_path, input_key=input_key, label_key=label_key, class_names=class_names)
+    same_path = Path(source_path).resolve() == Path(eval_path).resolve()
+    if same_path and split_same_path:
+        fit_ds, val_ds, summary = split_daeac_source_fit_val(source_ds)
+        summary.update({"source_path": str(source_path), "eval_path": str(eval_path), "split_applied": True})
+        return fit_ds, val_ds, summary
+
+    val_ds = DAEACDataset(eval_path, input_key=input_key, label_key=label_key, class_names=class_names)
+    summary = {
+        "source_path": str(source_path),
+        "eval_path": str(eval_path),
+        "split_applied": False,
+        "same_path": same_path,
+        "fit_samples": len(source_ds),
+        "val_samples": len(val_ds),
+    }
+    return source_ds, val_ds, summary
+
+
+def split_daeac_source_fit_val(dataset: DAEACDataset) -> tuple[Subset, Subset, dict[str, Any]]:
+    records = dataset.records
+    if records is None:
+        raise ValueError("DAEAC source dataset has no record metadata; cannot create record-wise train/validation split.")
+
+    record_strings = np.asarray([str(value) for value in records])
+    fit_records, val_records = mitbih_fit_val_records()
+    fit_set = set(fit_records)
+    val_set = set(val_records)
+    fit_idx = [idx for idx, rec in enumerate(record_strings) if rec in fit_set]
+    val_idx = [idx for idx, rec in enumerate(record_strings) if rec in val_set]
+    if not fit_idx or not val_idx:
+        present = sorted(set(record_strings))
+        raise ValueError(
+            "DAEAC source fit/validation split is empty. "
+            f"Expected fit records={fit_records}, val records={val_records}, present records={present}."
+        )
+
+    fit_present = set(record_strings[fit_idx])
+    val_present = set(record_strings[val_idx])
+    overlap = sorted(fit_present & val_present)
+    if overlap:
+        raise ValueError(f"Record overlap between DAEAC source fit and validation splits: {overlap}")
+
+    summary = {
+        "mode": "mitbih_fit_val_records",
+        "fit_records": fit_records,
+        "val_records": val_records,
+        "fit_samples": len(fit_idx),
+        "val_samples": len(val_idx),
+        "record_overlap": overlap,
+    }
+    return Subset(dataset, fit_idx), Subset(dataset, val_idx), summary
 
 
 def class_counts_from_dataset(dataset: DAEACDataset, num_classes: int = 4) -> np.ndarray:

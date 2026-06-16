@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
-from src.data.daeac_dataset import DAEACDataset, subset_first
+from src.data.daeac_dataset import load_daeac_source_fit_val, subset_first
 from src.training.train_daeac_paper import train_daeac_base
 from src.utils.io import ensure_dir, write_json
 from src.utils.seed import set_seed
@@ -29,8 +29,14 @@ def main() -> None:
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
-    train_ds = DAEACDataset(cfg_path(config, "data", "source_train"), input_key=input_key, label_key=label_key, class_names=class_names)
-    val_ds = DAEACDataset(cfg_path(config, "data", "source_eval"), input_key=input_key, label_key=label_key, class_names=class_names)
+    train_ds, val_ds, split_summary = load_daeac_source_fit_val(
+        cfg_path(config, "data", "source_train"),
+        cfg_path(config, "data", "source_eval"),
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+    )
+    print(f"DAEAC source fit/validation split: {split_summary}")
     train_ds = subset_first(train_ds, args.max_source_samples)
     val_ds = subset_first(val_ds, args.max_val_samples)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
