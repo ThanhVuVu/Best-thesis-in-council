@@ -34,7 +34,11 @@ def main() -> None:
 
     dataset_names = list(diag_config["analysis"].get("datasets", []))
     for dataset_name, _path in selected_datasets(base_config, args.dataset, configured=dataset_names):
-        pred = read_predictions(prediction_path(diag_config, method, dataset_name), class_names)
+        pred_path = prediction_path(diag_config, method, dataset_name)
+        if not pred_path.exists():
+            print(f"skipped {dataset_name}: missing predictions {pred_path}")
+            continue
+        pred = read_predictions(pred_path, class_names)
         metrics = classification_metrics(pred["y_true"], pred["y_pred"], class_names)
         cm = np.asarray(metrics["confusion_matrix"], dtype=np.float64)
         normalized = cm / np.maximum(cm.sum(axis=1, keepdims=True), 1.0)

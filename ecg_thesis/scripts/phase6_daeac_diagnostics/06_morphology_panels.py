@@ -35,13 +35,17 @@ def main() -> None:
 
     dataset_names = list(diag_config["analysis"].get("datasets", []))
     for dataset_name, data_path in selected_datasets(base_config, args.dataset, configured=dataset_names):
+        pred_path = prediction_path(diag_config, method, dataset_name)
+        if not pred_path.exists():
+            print(f"skipped {dataset_name}: missing predictions {pred_path}")
+            continue
         dataset = DAEACDataset(
             data_path,
             input_key=str(base_config["data"].get("input_key", "auto")),
             label_key=str(base_config["data"].get("label_key", "y")),
             class_names=class_names,
         )
-        pred = read_predictions(prediction_path(diag_config, method, dataset_name), class_names)
+        pred = read_predictions(pred_path, class_names)
         rows = pred["rows"]
         for true_name, pred_name in pairs:
             selected = [

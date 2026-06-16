@@ -40,6 +40,9 @@ def main() -> None:
     dataset_names = list(diag_config["analysis"].get("datasets", []))
     for dataset_name, _path in selected_datasets(base_config, args.dataset, configured=dataset_names):
         path = embedding_path(diag_config, method, dataset_name)
+        if not path.exists():
+            print(f"skipped {dataset_name}: missing embeddings {path}")
+            continue
         data = np.load(path, allow_pickle=True)
         features = data["features"]
         y_true = data["y_true"]

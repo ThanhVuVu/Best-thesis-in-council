@@ -37,7 +37,11 @@ def main() -> None:
 
     dataset_names = list(diag_config["analysis"].get("datasets", []))
     for dataset_name, _path in selected_datasets(base_config, args.dataset, configured=dataset_names):
-        pred = read_predictions(prediction_path(diag_config, method, dataset_name), class_names)
+        pred_path = prediction_path(diag_config, method, dataset_name)
+        if not pred_path.exists():
+            print(f"skipped {dataset_name}: missing predictions {pred_path}")
+            continue
+        pred = read_predictions(pred_path, class_names)
         dataset_summary = {}
         for class_name in focus:
             cls = class_names.index(class_name)
