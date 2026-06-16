@@ -31,6 +31,8 @@ def main() -> None:
     parser.add_argument("--method-name", default=None)
     parser.add_argument("--dataset", default="configured")
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--save-embeddings", action="store_true")
     args = parser.parse_args()
 
@@ -52,7 +54,14 @@ def main() -> None:
         )
         n = len(ds) if args.max_samples is None else min(int(args.max_samples), len(ds))
         eval_ds = subset_first(ds, args.max_samples)
-        loader = DataLoader(eval_ds, batch_size=int(base_config["evaluation"]["batch_size"]), shuffle=False, num_workers=0)
+        batch_size = int(args.batch_size or base_config["evaluation"]["batch_size"])
+        loader = DataLoader(
+            eval_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=int(args.num_workers),
+            pin_memory=bool(device.type == "cuda"),
+        )
         result = _predict(model, loader, device)
         metrics = daeac_metrics(result["y_true"], result["y_pred"], class_names)
         metrics.update({"dataset": dataset_name, "setting": method, "checkpoint": str(checkpoint_path(diag_config, args.checkpoint))})
@@ -66,7 +75,7 @@ def main() -> None:
 
 def _predict(model, loader: DataLoader, device: torch.device) -> dict[str, np.ndarray]:
     features, probs, y_true = [], [], []
-    with torch.no_grad():
+    with torch.inference_mode():
         for x, y in loader:
             z, _logits, p = model(x.to(device), return_logits=True)
             features.append(z.detach().cpu().numpy())
