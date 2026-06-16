@@ -1,0 +1,72 @@
+seed: 42
+
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: phase6_daeac_adversarial
+    mode: null
+    tags: ["phase6", "daeac", "cdan", "cdan_e"]
+    log_artifacts: false
+
+paths:
+  processed_dir: data/processed/phase6_daeac_paper
+  output_dir: outputs/phase6_daeac_cdan
+  checkpoint_backup_dir: null
+
+data:
+  source_train: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
+  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+  external_targets:
+    incart: data/processed/phase6_daeac_paper/incart_all_daeac.npz
+    svdb: data/processed/phase6_daeac_paper/svdb_all_daeac.npz
+  input_key: auto
+  label_key: y
+  class_names: ["N", "S", "V", "F"]
+  num_classes: 4
+
+model:
+  num_classes: 4
+  input_channels: 1
+  initial_channels: 4
+  dilations: [1, 6, 12, 18]
+  feature_dim: 256
+  se_reduction: 16
+  dropout: 0.0
+
+training:
+  checkpoint_prefix: daeac_cdan_e
+  init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
+  epochs: 300
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: true
+  source_loss: weighted_ce
+  optimizer: adam
+  scheduler: step
+  early_stopping_patience: 300
+
+cdan:
+  method: cdan_e
+  lambda_base: 0.2
+  lambda_schedule: progressive
+  fixed_lambda: 1.0
+  warmup_epochs: 0
+  conditioning: auto
+  randomized_threshold: 4096
+  random_dim: 1024
+  domain_hidden_dim: 256
+  dropout: 0.3
+  detach_softmax_in_T: true
+  normalize_entropy_weights: true
+
+evaluation:
+  batch_size: 256
