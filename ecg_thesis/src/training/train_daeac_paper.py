@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, Subset
 from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset
 from src.models.daeac_paper import ClassifierH, DAEACNetwork
 from src.training.daeac_losses import (
+    build_daeac_classification_loss,
     cluster_aligning_loss,
     compacting_loss,
     distance_from_name,
@@ -52,6 +53,7 @@ def train_daeac_base(
     train_loader = DataLoader(train_dataset, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(train_dataset, config, cfg, device)
+    cls_loss_fn = build_daeac_classification_loss(cfg, int(config["data"]["num_classes"]), class_weights).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
@@ -73,7 +75,7 @@ def train_daeac_base(
             x = x.to(device)
             y = y.to(device)
             _, logits, _ = model(x, return_logits=True)
-            loss = weighted_cross_entropy_from_logits(logits, y, class_weights)
+            loss = cls_loss_fn(logits, y)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
