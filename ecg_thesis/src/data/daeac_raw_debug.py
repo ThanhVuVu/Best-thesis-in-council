@@ -111,18 +111,31 @@ def build_raw_cache_for_dataset(
 def _resolve_record_dir(raw_dir: Path, record: str, cache: dict[str, Path]) -> Path:
     if record in cache:
         return cache[record]
-    direct = raw_dir / f"{record}.hea"
-    if direct.exists():
+    if _has_complete_wfdb_record(raw_dir, record):
         cache[record] = raw_dir
         return raw_dir
     matches = sorted(raw_dir.glob(f"**/{record}.hea"))
-    if matches:
-        cache[record] = matches[0].parent
-        return matches[0].parent
+    for match in matches:
+        parent = match.parent
+        if ".old" in parent.name.lower() or "old-header" in str(parent).lower():
+            continue
+        if _has_complete_wfdb_record(parent, record):
+            cache[record] = parent
+            return parent
+    for match in matches:
+        parent = match.parent
+        if _has_complete_wfdb_record(parent, record):
+            cache[record] = parent
+            return parent
     raise FileNotFoundError(
-        f"Could not find WFDB record {record}.hea under {raw_dir}. "
-        "Pass the directory that contains the .hea/.dat/.atr files, or a parent directory containing them."
+        f"Could not find complete WFDB record {record} (.hea/.dat/.atr) under {raw_dir}. "
+        "Pass the directory that contains the .hea/.dat/.atr files, or a parent directory containing them. "
+        "Header-only folders such as .old-headers are ignored."
     )
+
+
+def _has_complete_wfdb_record(folder: Path, record: str) -> bool:
+    return (folder / f"{record}.hea").exists() and (folder / f"{record}.dat").exists() and (folder / f"{record}.atr").exists()
 
 
 def extract_raw_window(signal: np.ndarray, r_peak_sample: int, fs: float, cfg: dict[str, Any]) -> np.ndarray:
