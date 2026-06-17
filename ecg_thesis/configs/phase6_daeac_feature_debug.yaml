@@ -1,0 +1,64 @@
+experiment:
+  name: phase6_daeac_feature_debug
+  group: phase6_daeac_feature_debug
+  description: Raw clinical and layer-wise feature collapse debugging for Phase 6 DAEAC checkpoints.
+
+paths:
+  processed_dir: data/processed/phase6_daeac_paper
+  output_dir: outputs/phase6_daeac_feature_debug
+  raw_cache_dir: outputs/phase6_daeac_feature_debug/raw_cache
+
+data:
+  input_key: auto
+  label_key: y
+  class_names: ["N", "S", "V", "F"]
+  num_classes: 4
+  datasets:
+    target: mitdb_ds2_daeac.npz
+    incart: incart_all_daeac.npz
+    svdb: svdb_all_daeac.npz
+
+raw:
+  target_fs: 360
+  pre_r_sec: 0.35
+  post_r_sec: 0.45
+  qrs_proxy_sec: 0.12
+  pre_region_sec: 0.20
+  post_region_sec: 0.28
+  save_raw_windows: false
+  allow_missing_raw: false
+  lead_selection:
+    mitdb: ["MLII", "II"]
+    incart: ["II", "MLII"]
+    svdb: ["MLII", "II", "ECG1"]
+  fallback_lead_index: 0
+
+analysis:
+  batch_size: 512
+  max_samples: 20000
+  knn_k: 10
+  nearest_k: 5
+  probe_test_size: 0.25
+  probe_max_iter: 1000
+  random_seed: 42
+  layers:
+    - input
+    - input_conv
+    - aspp_se_1
+    - residual_1
+    - aspp_se_2
+    - residual_2
+    - transition
+    - final_aspp_se
+    - transition_gap
+    - final_aspp_gap
+    - gap_embed
+
+visualization:
+  max_points: 5000
+  embedding_method: pca
+
+training:
+  checkpoint_prefix: daeac_feature_debug
+  batch_size: 512
+  epochs: 0
