@@ -66,6 +66,7 @@ def build_raw_cache_for_dataset(
         raise FileNotFoundError(f"Raw WFDB directory does not exist for {dataset_key}: {raw_path}")
     limit = min(len(dataset), int(max_samples)) if max_samples is not None else len(dataset)
     record_cache: dict[str, tuple[np.ndarray, float, int, str]] = {}
+    record_dir_cache: dict[str, Path] = {}
     rows: list[dict[str, Any]] = []
     windows: list[np.ndarray] = []
     save_windows = bool(cfg.get("save_raw_windows", False))
@@ -73,7 +74,8 @@ def build_raw_cache_for_dataset(
         meta = dataset.metadata(idx)
         record = str(meta.get("record", meta.get("record_id", "")))
         if record not in record_cache:
-            wfdb_record = read_record(raw_path, record)
+            record_dir = _resolve_record_dir(raw_path, record, record_dir_cache)
+            wfdb_record = read_record(record_dir, record)
             signal = wfdb_record.p_signal
             if signal is None:
                 raise ValueError(f"Record {record} has no physical signal")
@@ -104,6 +106,23 @@ def build_raw_cache_for_dataset(
         if save_windows:
             windows.append(window.astype(np.float32))
     return rows, np.stack(windows).astype(np.float32) if windows else None
+
+
+def _resolve_record_dir(raw_dir: Path, record: str, cache: dict[str, Path]) -> Path:
+    if record in cache:
+        return cache[record]
+    direct = raw_dir / f"{record}.hea"
+    if direct.exists():
+        cache[record] = raw_dir
+        return raw_dir
+    matches = sorted(raw_dir.glob(f"**/{record}.hea"))
+    if matches:
+        cache[record] = matches[0].parent
+        return matches[0].parent
+    raise FileNotFoundError(
+        f"Could not find WFDB record {record}.hea under {raw_dir}. "
+        "Pass the directory that contains the .hea/.dat/.atr files, or a parent directory containing them."
+    )
 
 
 def extract_raw_window(signal: np.ndarray, r_peak_sample: int, fs: float, cfg: dict[str, Any]) -> np.ndarray:
