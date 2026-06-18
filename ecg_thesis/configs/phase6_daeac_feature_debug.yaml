@@ -32,10 +32,19 @@ raw:
     incart: ["II", "MLII"]
     svdb: ["MLII", "II", "ECG1"]
   fallback_lead_index: 0
+  max_samples_by_dataset:
+    target: 20000
+    incart: 5000
+    svdb: 5000
 
 analysis:
   batch_size: 512
   max_samples: 20000
+  max_samples_by_dataset:
+    target: 20000
+    incart: 5000
+    svdb: 5000
+  sampling: stratified
   knn_k: 10
   nearest_k: 5
   probe_test_size: 0.25

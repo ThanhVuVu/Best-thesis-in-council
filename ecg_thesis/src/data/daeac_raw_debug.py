@@ -60,17 +60,19 @@ def build_raw_cache_for_dataset(
     fallback_lead_index: int,
     cfg: dict[str, Any],
     max_samples: int | None = None,
+    random_seed: int = 42,
 ) -> tuple[list[dict[str, Any]], np.ndarray | None]:
     raw_path = Path(raw_dir)
     if not raw_path.exists():
         raise FileNotFoundError(f"Raw WFDB directory does not exist for {dataset_key}: {raw_path}")
-    limit = min(len(dataset), int(max_samples)) if max_samples is not None else len(dataset)
+    selected_indices = select_stratified_debug_indices(dataset.y, max_samples=max_samples, random_seed=random_seed)
     record_cache: dict[str, tuple[np.ndarray, float, int, str]] = {}
     record_dir_cache: dict[str, Path] = {}
     rows: list[dict[str, Any]] = []
     windows: list[np.ndarray] = []
     save_windows = bool(cfg.get("save_raw_windows", False))
-    for idx in range(limit):
+    for idx in selected_indices:
+        idx = int(idx)
         meta = dataset.metadata(idx)
         record = str(meta.get("record", meta.get("record_id", "")))
         if record not in record_cache:
@@ -106,6 +108,42 @@ def build_raw_cache_for_dataset(
         if save_windows:
             windows.append(window.astype(np.float32))
     return rows, np.stack(windows).astype(np.float32) if windows else None
+
+
+def select_stratified_debug_indices(
+    labels: np.ndarray | None,
+    max_samples: int | None,
+    random_seed: int = 42,
+) -> np.ndarray:
+    if labels is None:
+        n = 0 if max_samples is None else int(max_samples)
+        return np.arange(n, dtype=np.int64)
+    labels = np.asarray(labels, dtype=np.int64)
+    if max_samples is None or int(max_samples) >= len(labels):
+        return np.arange(len(labels), dtype=np.int64)
+    max_samples = int(max_samples)
+    rng = np.random.default_rng(int(random_seed))
+    classes = sorted(int(v) for v in np.unique(labels))
+    per_class_quota = max(max_samples // max(len(classes), 1), 1)
+    selected: list[int] = []
+    selected_set: set[int] = set()
+    for cls in classes:
+        cls_idx = np.where(labels == cls)[0]
+        if len(cls_idx) == 0:
+            continue
+        take = min(len(cls_idx), per_class_quota)
+        chosen = rng.choice(cls_idx, size=take, replace=False) if len(cls_idx) > take else cls_idx
+        for idx in chosen.tolist():
+            selected.append(int(idx))
+            selected_set.add(int(idx))
+    if len(selected) < max_samples:
+        remaining = np.asarray([idx for idx in range(len(labels)) if idx not in selected_set], dtype=np.int64)
+        if len(remaining):
+            take = min(max_samples - len(selected), len(remaining))
+            filler = rng.choice(remaining, size=take, replace=False) if len(remaining) > take else remaining
+            selected.extend(int(idx) for idx in filler.tolist())
+    selected = selected[:max_samples]
+    return np.asarray(sorted(selected), dtype=np.int64)
 
 
 def _resolve_record_dir(raw_dir: Path, record: str, cache: dict[str, Path]) -> Path:

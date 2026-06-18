@@ -27,6 +27,9 @@ def main() -> None:
     parser.add_argument("--svdb-raw-dir", default=None)
     parser.add_argument("--dataset", default="all", help="target, incart, svdb, or all")
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--target-max-samples", type=int, default=None)
+    parser.add_argument("--incart-max-samples", type=int, default=None)
+    parser.add_argument("--svdb-max-samples", type=int, default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--save-raw-windows", action="store_true")
     args = parser.parse_args()
@@ -63,7 +66,8 @@ def main() -> None:
             preferred_leads=preferred,
             fallback_lead_index=int(raw_cfg.get("fallback_lead_index", 0)),
             cfg=raw_cfg,
-            max_samples=args.max_samples,
+            max_samples=_dataset_max_samples(dataset_key, args, raw_cfg),
+            random_seed=int(config["analysis"].get("random_seed", 42)),
         )
         all_rows.extend(rows)
         if windows is not None:
@@ -72,6 +76,8 @@ def main() -> None:
             "processed_path": str(ds.path),
             "raw_dir": str(raw_dir),
             "samples_cached": len(rows),
+            "sampling": "stratified",
+            "class_counts_cached": _class_counts(rows, class_names),
             "raw_windows_saved": windows is not None,
         }
         ds.close()
@@ -92,6 +98,30 @@ def _selected_datasets(dataset: str) -> list[str]:
     if dataset in {"target", "incart", "svdb"}:
         return [dataset]
     raise ValueError(f"Unknown dataset {dataset!r}; expected target, incart, svdb, or all")
+
+
+def _dataset_max_samples(dataset_key: str, args, raw_cfg: dict) -> int | None:
+    explicit = {
+        "target": args.target_max_samples,
+        "incart": args.incart_max_samples,
+        "svdb": args.svdb_max_samples,
+    }.get(dataset_key)
+    if explicit is not None:
+        return int(explicit)
+    if args.max_samples is not None:
+        return int(args.max_samples)
+    defaults = raw_cfg.get("max_samples_by_dataset", {})
+    value = defaults.get(dataset_key)
+    return None if value in (None, "", "null", "None") else int(value)
+
+
+def _class_counts(rows: list[dict], class_names: list[str]) -> dict[str, int]:
+    counts = {name: 0 for name in class_names}
+    for row in rows:
+        class_id = int(row.get("class_id", -1))
+        if 0 <= class_id < len(class_names):
+            counts[class_names[class_id]] += 1
+    return counts
 
 
 def _write_csv(path: Path, rows: list[dict]) -> None:

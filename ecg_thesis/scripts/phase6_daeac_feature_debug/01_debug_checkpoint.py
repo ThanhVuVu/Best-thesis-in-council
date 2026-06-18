@@ -17,7 +17,7 @@ for path in (ROOT, SCRIPTS_DIR):
         sys.path.insert(0, str(path))
 
 from common import cfg_path, device_from_torch, load_phase1_config
-from src.data.daeac_raw_debug import load_labeled_daeac_dataset, processed_input_features, sample_ids
+from src.data.daeac_raw_debug import load_labeled_daeac_dataset, processed_input_features, sample_ids, select_stratified_debug_indices
 from src.models.daeac_adversarial import DAEACADDAModel
 from src.training.train_daeac_adversarial import load_daeac_adversarial_checkpoint
 from src.training.train_daeac_paper import daeac_metrics, load_daeac_checkpoint
@@ -49,6 +49,9 @@ def main() -> None:
     parser.add_argument("--raw-cache-dir", default=None)
     parser.add_argument("--dataset", default="target", help="target, incart, svdb, or all")
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--target-max-samples", type=int, default=None)
+    parser.add_argument("--incart-max-samples", type=int, default=None)
+    parser.add_argument("--svdb-max-samples", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--adda-encoder", choices=["source", "target"], default="target")
@@ -62,7 +65,6 @@ def main() -> None:
     figures = ensure_dir(output / "figures")
     processed_dir = Path(args.processed_dir) if args.processed_dir else cfg_path(config, "paths", "processed_dir")
     batch_size = int(args.batch_size or config["analysis"]["batch_size"])
-    max_samples = args.max_samples if args.max_samples is not None else config["analysis"].get("max_samples")
     class_names = list(config["data"]["class_names"])
 
     model, checkpoint_info = _load_model(args, model_config, device)
@@ -86,9 +88,8 @@ def main() -> None:
             label_key=str(config["data"].get("label_key", "y")),
             class_names=class_names,
         )
-        indices = np.arange(len(ds))
-        if max_samples is not None:
-            indices = indices[: min(int(max_samples), len(indices))]
+        max_samples = _dataset_max_samples(dataset_key, args, config["analysis"])
+        indices = select_stratified_debug_indices(ds.y, max_samples=max_samples, random_seed=int(config["analysis"].get("random_seed", 42)))
         subset = Subset(ds, indices.tolist())
         loader = DataLoader(subset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=device.type == "cuda")
         result = _collect_model_outputs(model, loader, device, args.adda_encoder)
@@ -147,6 +148,8 @@ def main() -> None:
         combined_effect.extend(_tag_rows(effect_rows, args.method_name, dataset_key))
         summary["datasets"][dataset_key] = {
             "samples": int(len(indices)),
+            "sampling": "stratified",
+            "class_counts_sampled": _class_counts(y, class_names),
             "metrics": metrics,
             "raw_rows_joined": int(len(raw_rows)),
         }
@@ -286,6 +289,26 @@ def _selected_datasets(dataset: str) -> list[str]:
     if dataset in {"target", "incart", "svdb"}:
         return [dataset]
     raise ValueError(f"Unknown dataset {dataset!r}; expected target, incart, svdb, or all")
+
+
+def _dataset_max_samples(dataset_key: str, args, analysis_cfg: dict) -> int | None:
+    explicit = {
+        "target": args.target_max_samples,
+        "incart": args.incart_max_samples,
+        "svdb": args.svdb_max_samples,
+    }.get(dataset_key)
+    if explicit is not None:
+        return int(explicit)
+    if args.max_samples is not None:
+        return int(args.max_samples)
+    defaults = analysis_cfg.get("max_samples_by_dataset", {})
+    value = defaults.get(dataset_key, analysis_cfg.get("max_samples"))
+    return None if value in (None, "", "null", "None") else int(value)
+
+
+def _class_counts(y: np.ndarray, class_names: list[str]) -> dict[str, int]:
+    counts = np.bincount(y.astype(np.int64), minlength=len(class_names))
+    return {name: int(counts[idx]) for idx, name in enumerate(class_names)}
 
 
 def _tag_rows(rows: list[dict[str, Any]], method_name: str, dataset: str) -> list[dict[str, Any]]:
