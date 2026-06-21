@@ -81,10 +81,10 @@ def _check_configs() -> list[str]:
         for key in ("paths", "data"):
             if key not in data:
                 errors.append(f"Config missing '{key}': {path.relative_to(ROOT)}")
-        training_sections = ("training", "source_only", "dann", "source_free")
-        if not any(section in data for section in training_sections):
+        workflow_sections = ("training", "source_only", "dann", "source_free", "preprocessing")
+        if not any(section in data for section in workflow_sections):
             rel = path.relative_to(ROOT)
-            errors.append(f"Config has no training section: {rel}")
+            errors.append(f"Config has no training or preprocessing section: {rel}")
     return errors
 
 
