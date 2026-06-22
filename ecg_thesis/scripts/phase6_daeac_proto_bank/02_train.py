@@ -71,6 +71,9 @@ def main() -> None:
             "usage": summary["usage"],
             "best_epoch": summary["best_epoch"],
             "best_val_macro_f1": summary["best_val_macro_f1"],
+            "init_val_macro_f1": summary.get("init_val_macro_f1"),
+            "adaptation_gain_over_init": summary.get("adaptation_gain_over_init"),
+            "selected_stage": summary.get("selected_stage"),
             "best_checkpoint": summary["best_checkpoint"],
             "latest_checkpoint": summary["latest_checkpoint"],
         }

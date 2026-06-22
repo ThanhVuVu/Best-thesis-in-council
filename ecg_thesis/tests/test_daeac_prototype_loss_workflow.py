@@ -47,6 +47,11 @@ class PrototypeLossWorkflowTests(unittest.TestCase):
             self.assertEqual(active, expected)
             self.assertEqual(config["data"]["class_names"], ["N", "S", "V", "F"])
             self.assertEqual(config["pseudo_filter"]["mode"], "class_specific")
+            self.assertEqual(config["adaptation"]["batchnorm_mode"], "freeze_all")
+            self.assertEqual(config["adaptation"]["target_forward_mode"], "single")
+            self.assertEqual(config["adaptation"]["epoch_driver"], "target_once")
+            self.assertEqual(config["adaptation"]["training_semantics_version"], 2)
+            self.assertLessEqual(float(config["adaptation"]["lr"]), 1.0e-4)
         self.assertEqual(len(outputs), len(VARIANT_FLAGS))
         self.assertEqual(len(prefixes), len(VARIANT_FLAGS))
 

@@ -55,6 +55,9 @@ from src.utils.wandb_logging import init_wandb
 
 
 VALID_USAGES = {"logging_only", "weighted_global"}
+VALID_BATCHNORM_MODES = {"train", "freeze_stats", "freeze_all"}
+VALID_TARGET_FORWARD_MODES = {"double", "single"}
+VALID_EPOCH_DRIVERS = {"source", "target_once"}
 
 
 def validate_prototype_bank_config(config: dict[str, Any]) -> str:
@@ -69,7 +72,40 @@ def validate_prototype_bank_config(config: dict[str, Any]) -> str:
     class_names = list(config.get("data", {}).get("class_names", []))
     validate_pseudo_filter_config(config, class_names)
     validate_prototype_loss_config(config, class_names)
+    _validate_adaptation_execution_config(config)
     return usage
+
+
+def _validate_adaptation_execution_config(config: dict[str, Any]) -> None:
+    cfg = dict(config.get("adaptation", {}))
+    batchnorm_mode = str(cfg.get("batchnorm_mode", "train")).lower()
+    target_forward_mode = str(cfg.get("target_forward_mode", "double")).lower()
+    epoch_driver = str(cfg.get("epoch_driver", "source")).lower()
+    if batchnorm_mode not in VALID_BATCHNORM_MODES:
+        raise ValueError(f"adaptation.batchnorm_mode must be one of {sorted(VALID_BATCHNORM_MODES)}.")
+    if target_forward_mode not in VALID_TARGET_FORWARD_MODES:
+        raise ValueError(
+            f"adaptation.target_forward_mode must be one of {sorted(VALID_TARGET_FORWARD_MODES)}."
+        )
+    if epoch_driver not in VALID_EPOCH_DRIVERS:
+        raise ValueError(f"adaptation.epoch_driver must be one of {sorted(VALID_EPOCH_DRIVERS)}.")
+
+
+def _validate_resume_execution_compatibility(checkpoint: dict[str, Any], current_cfg: dict[str, Any]) -> None:
+    saved_cfg = dict(checkpoint.get("config", {}).get("adaptation", {}))
+    expected_version = int(current_cfg.get("training_semantics_version", 1))
+    saved_version = int(saved_cfg.get("training_semantics_version", 1))
+    if saved_version != expected_version:
+        raise ValueError(
+            "Resume checkpoint uses incompatible adaptation training semantics "
+            f"(checkpoint={saved_version}, current={expected_version}). Start this corrected workflow "
+            "from the source-selected init checkpoint instead of resuming the old adaptation run."
+        )
+    for key in ("batchnorm_mode", "target_forward_mode", "epoch_driver"):
+        saved = str(saved_cfg.get(key, ""))
+        current = str(current_cfg.get(key, ""))
+        if saved != current:
+            raise ValueError(f"Resume checkpoint adaptation.{key}={saved!r} does not match current {current!r}.")
 
 
 def build_prototype_bank(config: dict[str, Any], device: torch.device) -> ReliabilityWeightedPrototypeBank:
@@ -110,12 +146,17 @@ def train_daeac_prototype_bank(
     if not init_checkpoint:
         raise ValueError("adaptation.init_checkpoint is required; this workflow never trains a base model silently.")
     load_daeac_checkpoint(init_checkpoint, config, device, model=model)
+    batchnorm_mode = str(cfg.get("batchnorm_mode", "train")).lower()
+    target_forward_mode = str(cfg.get("target_forward_mode", "double")).lower()
+    epoch_driver = str(cfg.get("epoch_driver", "source")).lower()
+    configure_adaptation_batchnorm(model, batchnorm_mode)
     source_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=True, num_workers=0)
     source_init_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     target_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
+    trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    optimizer = torch.optim.Adam(trainable_parameters, lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
         step_size=int(cfg["lr_decay_every_steps"]),
@@ -158,11 +199,14 @@ def train_daeac_prototype_bank(
     start_epoch = 0
     best_macro_f1 = -1.0
     best_epoch = -1
+    init_val_macro_f1: float | None = None
+    best_adapted_macro_f1 = -1.0
     all_n_streak = 0
     empty_acceptance_streak = 0
     history: list[dict[str, Any]] = []
     if resume_checkpoint is not None:
         resume = torch.load(resume_checkpoint, map_location=device)
+        _validate_resume_execution_compatibility(resume, cfg)
         model.load_state_dict(resume["model_state_dict"])
         bank.load_state_dict(resume["prototype_bank_state_dict"])
         optimizer.load_state_dict(resume["optimizer_state_dict"])
@@ -170,6 +214,14 @@ def train_daeac_prototype_bank(
         start_epoch = int(resume["epoch"]) + 1
         best_macro_f1 = float(resume.get("best_macro_f1", -1.0))
         best_epoch = int(resume.get("best_epoch", -1))
+        init_value = resume.get("init_val_macro_f1")
+        init_val_macro_f1 = float(init_value) if init_value is not None else None
+        best_adapted_macro_f1 = float(
+            resume.get(
+                "best_adapted_macro_f1",
+                max((float(row["val_macro_f1"]) for row in resume.get("history", [])), default=-1.0),
+            )
+        )
         all_n_streak = int(resume.get("all_n_streak", 0))
         empty_acceptance_streak = int(resume.get("empty_acceptance_streak", 0))
         history = list(resume.get("history", []))
@@ -183,11 +235,44 @@ def train_daeac_prototype_bank(
     best_path = ckpt_dir / f"{prefix}_best.pt"
     history_path = metrics_dir / f"{prefix}_train_log.csv"
     run = init_wandb(config, job_type="train_daeac_prototype_bank", default_name=prefix)
+    if resume_checkpoint is None:
+        init_result = evaluate_daeac_model(model, val_loader, device, class_names)
+        init_val_macro_f1 = float(init_result["metrics"]["macro_f1"])
+        best_macro_f1 = init_val_macro_f1
+        best_epoch = -1
+        init_row = {
+            "epoch": -1,
+            "stage": "initialization",
+            "optimizer_steps": 0,
+            "val_accuracy": float(init_result["metrics"]["accuracy"]),
+            "val_macro_f1": init_val_macro_f1,
+            "lr": float(optimizer.param_groups[0]["lr"]),
+        }
+        write_json(init_row, metrics_dir / f"{prefix}_init_metrics.json")
+        _save_checkpoint(
+            best_path,
+            model,
+            bank,
+            optimizer,
+            scheduler,
+            config,
+            -1,
+            init_row,
+            best_macro_f1,
+            best_epoch,
+            all_n_streak,
+            empty_acceptance_streak,
+            legacy_memory,
+            history,
+            init_val_macro_f1=init_val_macro_f1,
+            best_adapted_macro_f1=best_adapted_macro_f1,
+        )
+        run.summary_update({"init_val_macro_f1": init_val_macro_f1, "selected_stage": "initialization"})
+        print(f"[{prefix} init] val_macro_f1={init_val_macro_f1:.4f} selected_as_initial_best")
     for epoch in range(start_epoch, int(cfg["epochs"])):
-        model.train()
+        set_adaptation_train_mode(model, batchnorm_mode)
         aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
         aux_classifier.eval()
-        target_iter = _cycle(target_loader)
         batch_rows: list[dict[str, float]] = []
         predicted_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
         accepted_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
@@ -206,6 +291,8 @@ def train_daeac_prototype_bank(
         source_pair_violations = torch.zeros_like(source_pair_counts)
         target_pair_counts = torch.zeros_like(source_pair_counts)
         target_pair_violations = torch.zeros_like(source_pair_counts)
+        source_samples_seen = 0
+        target_samples_seen = 0
 
         if replacement_losses:
             ramps = {
@@ -215,15 +302,25 @@ def train_daeac_prototype_bank(
         else:
             ramps = {name: 0.0 for name in ("proto_align", "comp_source", "comp_target", "sep_margin")}
 
-        for x_s, y_s in source_loader:
-            target_batch = next(target_iter)
+        for source_batch, target_batch in paired_adaptation_batches(
+            source_loader,
+            target_loader,
+            epoch_driver=epoch_driver,
+        ):
+            x_s, y_s = source_batch
             x_t = target_batch[0] if isinstance(target_batch, (tuple, list)) else target_batch
             x_s, y_s, x_t = x_s.to(device), y_s.to(device), x_t.to(device)
+            source_samples_seen += int(y_s.numel())
+            target_samples_seen += int(x_t.shape[0])
             z_s, logits_s, _ = model(x_s, return_logits=True)
             loss_cls = weighted_cross_entropy_from_logits(logits_s, y_s, class_weights)
+            z_t_all, probabilities_t = forward_target_for_pseudolabels(
+                model,
+                aux_classifier,
+                x_t,
+                mode=target_forward_mode,
+            )
             with torch.no_grad():
-                z_t_all = model.extract_features(x_t)
-                _, probabilities_t = aux_classifier(z_t_all, return_logits=True)
                 if filter_enabled:
                     filtered = filter_target_pseudolabels(
                         probabilities_t,
@@ -251,7 +348,7 @@ def train_daeac_prototype_bank(
                 selected_x_t = x_t[confident]
                 selected_pseudo_t = pseudo_t[confident]
                 selected_weights_t = target_reliability_weights(confidence_t[confident], entropy_t[confident])
-                z_t = model.extract_features(selected_x_t)
+                z_t = z_t_all[confident] if target_forward_mode == "single" else model.extract_features(selected_x_t)
             else:
                 selected_pseudo_t = torch.empty(0, dtype=torch.long, device=device)
                 selected_weights_t = torch.empty(0, device=device)
@@ -417,6 +514,13 @@ def train_daeac_prototype_bank(
                         )
                     )
                 ),
+                "execution/batchnorm_frozen": float(batchnorm_mode != "train"),
+                "execution/batchnorm_affine_frozen": float(batchnorm_mode == "freeze_all"),
+                "execution/single_target_forward": float(target_forward_mode == "single"),
+                "execution/target_once_epoch": float(epoch_driver == "target_once"),
+                "execution/optimizer_steps": float(len(batch_rows)),
+                "execution/source_samples_seen": float(source_samples_seen),
+                "execution/target_samples_seen": float(target_samples_seen),
             }
         )
         _add_class_diagnostics(
@@ -447,9 +551,10 @@ def train_daeac_prototype_bank(
             target_pair_violations,
         )
         history.append(row)
+        best_adapted_macro_f1 = max(best_adapted_macro_f1, float(row["val_macro_f1"]))
         _write_history_csv(history, history_path)
         run.log({f"adapt/{key}": value for key, value in row.items() if key not in {"epoch", "usage"}}, step=epoch)
-        if row["val_macro_f1"] >= best_macro_f1:
+        if row["val_macro_f1"] > best_macro_f1 + float(cfg.get("checkpoint_min_delta", 0.0)):
             best_macro_f1 = float(row["val_macro_f1"])
             best_epoch = epoch
             _save_checkpoint(
@@ -467,6 +572,8 @@ def train_daeac_prototype_bank(
                 empty_acceptance_streak,
                 legacy_memory,
                 history,
+                init_val_macro_f1=init_val_macro_f1,
+                best_adapted_macro_f1=best_adapted_macro_f1,
             )
         _save_checkpoint(
             latest_path,
@@ -483,6 +590,8 @@ def train_daeac_prototype_bank(
             empty_acceptance_streak,
             legacy_memory,
             history,
+            init_val_macro_f1=init_val_macro_f1,
+            best_adapted_macro_f1=best_adapted_macro_f1,
         )
         print(
             f"[{prefix} {epoch + 1}/{cfg['epochs']}] loss={row['loss']:.4f} "
@@ -521,7 +630,15 @@ def train_daeac_prototype_bank(
         "best_checkpoint": str(best_path),
         "best_epoch": best_epoch,
         "best_val_macro_f1": best_macro_f1,
-        "checkpoint_selection": "source_validation_macro_f1",
+        "init_val_macro_f1": init_val_macro_f1,
+        "best_adapted_val_macro_f1": best_adapted_macro_f1,
+        "adaptation_gain_over_init": (
+            best_adapted_macro_f1 - init_val_macro_f1
+            if init_val_macro_f1 is not None and best_adapted_macro_f1 >= 0.0
+            else None
+        ),
+        "selected_stage": "initialization" if best_epoch == -1 else "adaptation",
+        "checkpoint_selection": "source_validation_macro_f1_including_initialization",
         "target_test_used_during_training": False,
         "pseudo_filter": filter_cfg,
         "final_prototype_diagnostics": _json_bank_diagnostics(bank, class_names),
@@ -805,6 +922,8 @@ def _save_checkpoint(
     empty_acceptance_streak,
     legacy_memory,
     history,
+    init_val_macro_f1=None,
+    best_adapted_macro_f1=-1.0,
 ):
     torch.save(
         {
@@ -817,6 +936,8 @@ def _save_checkpoint(
             "metrics": metrics,
             "best_macro_f1": float(best_macro_f1),
             "best_epoch": int(best_epoch),
+            "init_val_macro_f1": float(init_val_macro_f1) if init_val_macro_f1 is not None else None,
+            "best_adapted_macro_f1": float(best_adapted_macro_f1),
             "all_n_streak": int(all_n_streak),
             "empty_acceptance_streak": int(empty_acceptance_streak),
             "legacy_center_state": _legacy_memory_state(legacy_memory),
@@ -854,6 +975,65 @@ def _write_history_csv(rows, path):
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def configure_adaptation_batchnorm(model: torch.nn.Module, mode: str) -> None:
+    """Configure BatchNorm parameters once, before optimizer construction."""
+    mode = str(mode).lower()
+    if mode not in VALID_BATCHNORM_MODES:
+        raise ValueError(f"Unknown BatchNorm adaptation mode: {mode}")
+    freeze_affine = mode == "freeze_all"
+    for module in model.modules():
+        if not isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            continue
+        if module.affine:
+            module.weight.requires_grad_(not freeze_affine)
+            module.bias.requires_grad_(not freeze_affine)
+        if mode != "train":
+            module.eval()
+
+
+def set_adaptation_train_mode(model: torch.nn.Module, batchnorm_mode: str) -> None:
+    """Enter train mode while keeping frozen BatchNorm modules in eval mode."""
+    model.train()
+    if str(batchnorm_mode).lower() == "train":
+        return
+    for module in model.modules():
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            module.eval()
+
+
+def paired_adaptation_batches(source_loader, target_loader, *, epoch_driver: str):
+    """Pair domains without silently repeating target samples in target-once mode."""
+    epoch_driver = str(epoch_driver).lower()
+    if epoch_driver == "source":
+        target_iter = _cycle(target_loader)
+        for source_batch in source_loader:
+            yield source_batch, next(target_iter)
+        return
+    if epoch_driver == "target_once":
+        source_iter = _cycle(source_loader)
+        for target_batch in target_loader:
+            yield next(source_iter), target_batch
+        return
+    raise ValueError(f"Unknown adaptation epoch driver: {epoch_driver}")
+
+
+def forward_target_for_pseudolabels(model, aux_classifier, inputs, *, mode: str):
+    """Extract target features once when requested and detach only the pseudo-label branch."""
+    mode = str(mode).lower()
+    if mode == "single":
+        features = model.extract_features(inputs)
+        pseudo_features = features.detach()
+    elif mode == "double":
+        with torch.no_grad():
+            features = model.extract_features(inputs)
+        pseudo_features = features
+    else:
+        raise ValueError(f"Unknown target forward mode: {mode}")
+    with torch.no_grad():
+        _, probabilities = aux_classifier(pseudo_features, return_logits=True)
+    return features, probabilities
 
 
 def _cycle(loader):

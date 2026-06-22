@@ -6,16 +6,25 @@ import unittest
 from pathlib import Path
 
 import torch
+from torch.utils.data import DataLoader, TensorDataset
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.models.daeac_paper import DAEACNetwork
+from src.models.daeac_paper import ClassifierH, DAEACNetwork
 from src.training.daeac_losses import compacting_loss, l2_distance, separating_loss
 from src.training.daeac_prototype_bank import ReliabilityWeightedPrototypeBank, candidate_lists
 from src.training.train_daeac_paper import CenterMemory, load_daeac_checkpoint
-from src.training.train_daeac_prototype_bank import _centers_for_usage, validate_prototype_bank_config
+from src.training.train_daeac_prototype_bank import (
+    _centers_for_usage,
+    _validate_resume_execution_compatibility,
+    configure_adaptation_batchnorm,
+    forward_target_for_pseudolabels,
+    paired_adaptation_batches,
+    set_adaptation_train_mode,
+    validate_prototype_bank_config,
+)
 
 
 class DAEACPrototypeBankTrainingTest(unittest.TestCase):
@@ -96,6 +105,70 @@ class DAEACPrototypeBankTrainingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prototype_bank.usage"):
             validate_prototype_bank_config(
                 {"prototype_bank": {"enabled": True, "usage": "mystery", "reliability_rule": "coverage_x_confidence"}}
+            )
+
+    def test_freeze_all_batchnorm_preserves_buffers_and_affine_parameters(self) -> None:
+        model = DAEACNetwork()
+        configure_adaptation_batchnorm(model, "freeze_all")
+        set_adaptation_train_mode(model, "freeze_all")
+        batchnorm = [
+            module for module in model.modules()
+            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm)
+        ]
+        before = [(module.running_mean.clone(), module.running_var.clone()) for module in batchnorm]
+        with torch.no_grad():
+            model.extract_features(torch.randn(4, 1, 3, 128))
+        self.assertTrue(batchnorm)
+        for module, (mean, variance) in zip(batchnorm, before):
+            self.assertFalse(module.training)
+            self.assertFalse(module.weight.requires_grad)
+            self.assertFalse(module.bias.requires_grad)
+            self.assertTrue(torch.equal(module.running_mean, mean))
+            self.assertTrue(torch.equal(module.running_var, variance))
+
+    def test_target_once_epoch_never_cycles_target_loader(self) -> None:
+        source = DataLoader(TensorDataset(torch.arange(10)), batch_size=2, shuffle=False)
+        target = DataLoader(TensorDataset(torch.arange(3)), batch_size=1, shuffle=False)
+        pairs = list(paired_adaptation_batches(source, target, epoch_driver="target_once"))
+        target_values = [int(target_batch[0].item()) for _, target_batch in pairs]
+        self.assertEqual(len(pairs), len(target))
+        self.assertEqual(target_values, [0, 1, 2])
+
+    def test_single_target_forward_is_consistent_and_keeps_feature_gradient(self) -> None:
+        class CountingExtractor(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer = torch.nn.Linear(2, 2)
+                self.calls = 0
+
+            def extract_features(self, inputs):
+                self.calls += 1
+                return self.layer(inputs)
+
+        model = CountingExtractor()
+        classifier = ClassifierH(feature_dim=2, num_classes=2)
+        features, probabilities = forward_target_for_pseudolabels(
+            model,
+            classifier,
+            torch.randn(4, 2),
+            mode="single",
+        )
+        self.assertEqual(model.calls, 1)
+        self.assertTrue(features.requires_grad)
+        self.assertFalse(probabilities.requires_grad)
+        features[:2].sum().backward()
+        self.assertIsNotNone(model.layer.weight.grad)
+
+    def test_old_adaptation_checkpoint_cannot_resume_corrected_semantics(self) -> None:
+        with self.assertRaisesRegex(ValueError, "incompatible adaptation training semantics"):
+            _validate_resume_execution_compatibility(
+                {"config": {"adaptation": {}}},
+                {
+                    "training_semantics_version": 2,
+                    "batchnorm_mode": "freeze_all",
+                    "target_forward_mode": "single",
+                    "epoch_driver": "target_once",
+                },
             )
 
 

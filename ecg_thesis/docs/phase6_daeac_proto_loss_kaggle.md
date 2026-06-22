@@ -24,6 +24,17 @@ does not return labels. Best checkpoints are selected only by source-validation
 Macro-F1. DS2-after5, INCART, and SVDB labels are post-training descriptions and
 must never select thresholds, weights, margins, epochs, or variants.
 
+The stabilized adaptation path deliberately differs from training from scratch:
+
+- adaptation Adam starts at `1e-4`, not the source-training LR `0.005`;
+- all BatchNorm running statistics and affine parameters stay frozen;
+- each target batch is forwarded once, and the same embedding generates its
+  pseudo-label and any accepted-target loss;
+- one adaptation epoch is exactly one shuffled pass over target-first5; source
+  batches are sampled alongside it without cycling target samples;
+- the untouched initialization is evaluated and saved as epoch `-1`, and remains
+  the selected best checkpoint unless adaptation strictly improves source-val.
+
 ## Kaggle inputs
 
 Enable a GPU and attach inputs containing exactly one copy of:
@@ -78,8 +89,14 @@ RESUME_CHECKPOINTS = {
 ```
 
 Resume restores model, optimizer, scheduler, prototype-bank buffers, history,
-best source-validation score, and pseudo-label safety streaks. Do not resume a
-different variant from that checkpoint.
+initialization score, best source-validation score, and pseudo-label safety
+streaks. Do not resume a different variant from that checkpoint.
+
+Checkpoints produced before `training_semantics_version: 2` are intentionally
+rejected: they contain the high-LR, repeated-target, train-mode-BatchNorm state
+that this correction removes, and their optimizer parameter groups are not
+compatible with frozen BatchNorm. Restart corrected runs from
+`daeac_base_best.pt`; only resume from a new version-2 `*_latest.pt`.
 
 W&B is disabled by default. Set `ENABLE_WANDB=True`; provide authentication via
 Kaggle Secrets and never place an API key in the notebook. Local JSON, CSV, and
@@ -129,6 +146,7 @@ checkpoints/*_best.pt
 checkpoints/*_latest.pt
 metrics/*_train_log.csv
 metrics/*_train_summary.json
+metrics/*_init_metrics.json
 metrics/*_best_*_metrics.json
 metrics/*_best_*_confusion_matrix.csv
 predictions/*_best_*_predictions.csv
@@ -144,9 +162,12 @@ The final notebook cells create:
 /kaggle/working/phase6_daeac_proto_loss_bundle.zip
 ```
 
-Inspect raw/weighted losses, ramps, accepted target counts, target weights,
-active alignment classes, prototype validity, and margin-violation ratios before
-interpreting performance. If S has no valid target prototype or `beta_S=0`, the
+Inspect initialization score, adaptation gain, raw/weighted losses, ramps,
+accepted target counts, target weights, active alignment classes, prototype
+validity, execution counters, and margin-violation ratios before interpreting
+performance. `execution/target_samples_seen` must equal the target-first5 size
+for every full epoch, and accepted counts must not exceed it. If S has no valid
+target prototype or `beta_S=0`, the
 global S prototype remains the source anchor and S alignment is skipped. Empty
 or all-N pseudo-label distributions retain the existing safety stop.
 

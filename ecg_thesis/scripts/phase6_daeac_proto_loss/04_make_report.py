@@ -44,6 +44,10 @@ def _variant_row(name: str, root: Path) -> dict:
         "output_dir": str(root),
         "best_epoch": (summary or {}).get("best_epoch"),
         "best_source_val_macro_f1": (summary or {}).get("best_val_macro_f1"),
+        "init_source_val_macro_f1": (summary or {}).get("init_val_macro_f1"),
+        "best_adapted_source_val_macro_f1": (summary or {}).get("best_adapted_val_macro_f1"),
+        "adaptation_gain_over_init": (summary or {}).get("adaptation_gain_over_init"),
+        "selected_stage": (summary or {}).get("selected_stage"),
         **errors,
         "metrics": metrics,
     }
@@ -71,14 +75,16 @@ def _markdown(rows: list[dict]) -> str:
         "",
         "Checkpoint selection uses source-validation Macro-F1 only. Target metrics are descriptive and must not select a variant.",
         "",
-        "| Variant | Best epoch | Source Macro-F1 | S→N | V→N | Target Macro-F1 (descriptive) |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Variant | Selected stage | Best epoch | Init F1 | Selected F1 | Adaptation gain | S→N | V→N | Target F1 (descriptive) |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         target = (row["metrics"].get("target_after5") or {}).get("macro_f1")
         lines.append(
-            f"| {row['variant']} | {_fmt(row['best_epoch'])} | {_fmt(row['best_source_val_macro_f1'])} | "
-            f"{_fmt(row.get('source_val_S_to_N'))} | {_fmt(row.get('source_val_V_to_N'))} | {_fmt(target)} |"
+            f"| {row['variant']} | {_fmt(row.get('selected_stage'))} | {_fmt(row['best_epoch'])} | "
+            f"{_fmt(row.get('init_source_val_macro_f1'))} | {_fmt(row['best_source_val_macro_f1'])} | "
+            f"{_fmt(row.get('adaptation_gain_over_init'))} | {_fmt(row.get('source_val_S_to_N'))} | "
+            f"{_fmt(row.get('source_val_V_to_N'))} | {_fmt(target)} |"
         )
     lines.extend(["", "Do not tune loss weights, margins, thresholds, checkpoints, or variants from target columns.", ""])
     return "\n".join(lines)
