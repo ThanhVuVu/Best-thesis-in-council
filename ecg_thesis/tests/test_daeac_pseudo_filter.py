@@ -112,7 +112,7 @@ class DAEACPseudoFilterTest(unittest.TestCase):
             "class_confidence_thresholds": {"N": 0.999, "S": 0.99, "V": 0.99},
             "max_normalized_entropy": 0.05, "near_all_n_ratio": 0.95, "safety_patience_epochs": 2,
         }}
-        with self.assertRaisesRegex(ValueError, "missing=\['F'\]"):
+        with self.assertRaisesRegex(ValueError, r"missing=\['F'\]"):
             validate_pseudo_filter_config(config, ["N", "S", "V", "F"])
 
 
