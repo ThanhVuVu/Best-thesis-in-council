@@ -22,7 +22,7 @@ def main() -> None:
         summary = _first_json(root / "metrics", "*_train_summary.json")
         metrics = {
             "source_val": _first_json(root / "metrics", "*_best_source_val_metrics.json"),
-            "target_after5": _first_json(root / "metrics", "*_best_target_after5_metrics.json"),
+            "target_full": _first_json(root / "metrics", "*_best_target_full_metrics.json"),
             "incart": _first_json(root / "metrics", "*_best_incart_metrics.json"),
             "svdb": _first_json(root / "metrics", "*_best_svdb_metrics.json"),
         }
@@ -63,7 +63,7 @@ def _markdown(rows):
         "",
         "Checkpoints are selected only by source-validation Macro-F1. Target metrics below are post-training descriptions, never selection signals.",
         "",
-        "| Variant | Best epoch | Source-val Macro-F1 | DS2-after5 Macro-F1 | INCART Macro-F1 | SVDB Macro-F1 |",
+        "| Variant | Best epoch | Source-monitor Macro-F1 | Full-DS2 Macro-F1 | INCART Macro-F1 | SVDB Macro-F1 |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
@@ -72,7 +72,7 @@ def _markdown(rows):
             row["variant"],
             _fmt(row["best_epoch"]),
             _fmt(row["best_source_val_macro_f1"]),
-            _fmt((metrics["target_after5"] or {}).get("macro_f1")),
+            _fmt((metrics["target_full"] or {}).get("macro_f1")),
             _fmt((metrics["incart"] or {}).get("macro_f1")),
             _fmt((metrics["svdb"] or {}).get("macro_f1")),
         ]

@@ -10,6 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.data.daeac_protocol import audit_daeac_disjoint, create_daeac_after_time_split, create_daeac_before_time_split
+from src.data.daeac_dataset import load_daeac_source_fit_val
 from src.models.daeac_paper import ClassifierH
 from src.training.daeac_losses import cluster_aligning_loss, compacting_loss, l2_distance, separating_loss
 from src.training.train_daeac_paper import build_pseudo_labeled_target_dataset
@@ -21,6 +22,23 @@ class _IdentityFeatureModel(nn.Module):
 
 
 class DAEACAdaptationSpecificationTests(unittest.TestCase):
+    def test_complete_source_is_used_for_fit_when_paths_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ds1.npz"
+            np.savez_compressed(
+                path,
+                x=np.zeros((4, 1, 3, 128), dtype=np.float32),
+                y=np.asarray([0, 1, 2, 3]),
+                record=np.asarray(["101", "220", "223", "230"]),
+                class_names=np.asarray(["N", "S", "V", "F"], dtype=object),
+            )
+            source, monitor, summary = load_daeac_source_fit_val(path, path)
+            self.assertEqual(len(source), 4)
+            self.assertEqual(len(monitor), 3)
+            self.assertTrue(summary["source_monitor_overlaps_fit"])
+            self.assertEqual(summary["mode"], "full_source_fit_with_overlapping_monitor_subset")
+            source.close()
+
     def test_pseudo_snapshot_visits_all_target_and_is_immutable(self) -> None:
         target = TensorDataset(torch.tensor([[3.0, 0.0], [0.0, 3.0], [2.0, 0.0]]))
         loader = DataLoader(target, batch_size=2, shuffle=False)

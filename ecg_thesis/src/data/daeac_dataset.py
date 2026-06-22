@@ -140,9 +140,19 @@ def load_daeac_source_fit_val(
     source_ds = DAEACDataset(source_path, input_key=input_key, label_key=label_key, class_names=class_names)
     same_path = Path(source_path).resolve() == Path(eval_path).resolve()
     if same_path and split_same_path:
-        fit_ds, val_ds, summary = split_daeac_source_fit_val(source_ds)
-        summary.update({"source_path": str(source_path), "eval_path": str(eval_path), "split_applied": True})
-        return fit_ds, val_ds, summary
+        _, val_ds, split_summary = split_daeac_source_fit_val(source_ds)
+        all_records = sorted(set(np.asarray(source_ds.records).astype(str))) if source_ds.records is not None else []
+        summary = {
+            **split_summary,
+            "mode": "full_source_fit_with_overlapping_monitor_subset",
+            "fit_records": all_records,
+            "fit_samples": len(source_ds),
+            "source_monitor_overlaps_fit": True,
+            "source_path": str(source_path),
+            "eval_path": str(eval_path),
+            "split_applied": True,
+        }
+        return source_ds, val_ds, summary
 
     val_ds = DAEACDataset(eval_path, input_key=input_key, label_key=label_key, class_names=class_names)
     summary = {
@@ -180,6 +190,22 @@ def split_daeac_source_fit_val(dataset: DAEACDataset) -> tuple[Subset, Subset, d
             f"Expected fit records={fit_records}, val records={val_records}, present records={present}."
         )
 
+    fit_present = set(record_strings[fit_idx])
+    val_present = set(record_strings[val_idx])
+    overlap = sorted(fit_present & val_present)
+    if overlap:
+        raise ValueError(f"Record overlap between DAEAC source fit and validation splits: {overlap}")
+
+    summary = {
+        "mode": "mitbih_fit_val_records",
+        "fit_records": fit_records,
+        "val_records": val_records,
+        "fit_samples": len(fit_idx),
+        "val_samples": len(val_idx),
+        "record_overlap": overlap,
+    }
+    return Subset(dataset, fit_idx), Subset(dataset, val_idx), summary
+
 
 class DAEACPseudoLabeledDataset(Dataset):
     """Immutable per-epoch view of confidently pseudo-labeled target samples."""
@@ -216,22 +242,6 @@ def _optional_snapshot_tensor(value: torch.Tensor | None, length: int, default: 
     if len(result) != length:
         raise ValueError("Pseudo-label metadata must have the same length as labels.")
     return result
-
-    fit_present = set(record_strings[fit_idx])
-    val_present = set(record_strings[val_idx])
-    overlap = sorted(fit_present & val_present)
-    if overlap:
-        raise ValueError(f"Record overlap between DAEAC source fit and validation splits: {overlap}")
-
-    summary = {
-        "mode": "mitbih_fit_val_records",
-        "fit_records": fit_records,
-        "val_records": val_records,
-        "fit_samples": len(fit_idx),
-        "val_samples": len(val_idx),
-        "record_overlap": overlap,
-    }
-    return Subset(dataset, fit_idx), Subset(dataset, val_idx), summary
 
 
 def class_counts_from_dataset(dataset: DAEACDataset, num_classes: int = 4) -> np.ndarray:

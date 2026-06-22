@@ -75,7 +75,7 @@ def _datasets(config, selection):
     if selection in {"source", "both", "all"}:
         selected.append(("source_val", cfg_path(config, "data", "source_eval")))
     if selection in {"target", "both", "all"}:
-        selected.append(("target_after5", cfg_path(config, "data", "target_test")))
+        selected.append(("target_full", cfg_path(config, "data", "target_test")))
     external = dict(config["data"].get("external_targets", {}))
     names = external.keys() if selection in {"external", "all"} else [selection] if selection in external else []
     for name in names:

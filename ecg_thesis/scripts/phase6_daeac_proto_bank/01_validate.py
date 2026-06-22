@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from common import cfg_path, load_phase1_config
-from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, split_daeac_source_fit_val
+from src.data.daeac_dataset import DAEACTargetUnlabeledDataset, inspect_daeac_npz, load_daeac_source_fit_val
 from src.data.daeac_protocol import audit_daeac_disjoint, inspect_daeac_time_split
 from src.training.train_daeac_prototype_bank import build_prototype_bank, validate_prototype_bank_config
 from src.utils.io import write_json
@@ -34,13 +34,13 @@ def main() -> None:
             class_names=class_names,
             require_labels=key != "target_unlabeled",
         )
-    source = DAEACDataset(
+    _, _, source_split = load_daeac_source_fit_val(
         cfg_path(config, "data", "source_train"),
+        cfg_path(config, "data", "source_eval"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
     )
-    _, _, source_split = split_daeac_source_fit_val(source)
     target = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),
         input_key=input_key,
@@ -53,28 +53,32 @@ def main() -> None:
         cfg_path(config, "data", "target_unlabeled"),
         cfg_path(config, "data", "target_test"),
     )
-    after5 = inspect_daeac_time_split(
-        cfg_path(config, "data", "target_test"),
-        float(config["data"]["target_split_seconds"]),
-    )
+    protocol = str(config["data"].get("target_protocol", "first5_adapt_after5_test"))
+    threshold = float(config["data"]["target_split_seconds"])
+    target_adaptation_time = inspect_daeac_time_split(cfg_path(config, "data", "target_unlabeled"), threshold)
+    target_test_time = inspect_daeac_time_split(cfg_path(config, "data", "target_test"), threshold)
     checkpoint = cfg_path(config, "adaptation", "init_checkpoint")
     if not checkpoint.exists():
         raise FileNotFoundError(f"Missing source-selected base checkpoint: {checkpoint}")
     bank = build_prototype_bank(config, device="cpu")
     if list(bank.parameters()):
         raise AssertionError("Prototype bank must not expose trainable parameters.")
-    if args.strict and not overlap["disjoint"]:
+    if args.strict and protocol == "first5_adapt_after5_test" and not overlap["disjoint"]:
         raise ValueError(f"Strict protocol failed: {overlap['overlap_count']} target samples overlap.")
-    threshold = float(config["data"]["target_split_seconds"])
-    if after5["time_min_sec"] is not None and after5["time_min_sec"] < threshold:
-        raise ValueError(f"Target test includes a sample before {threshold}s: {after5['time_min_sec']}")
+    if protocol.startswith("first5_adapt"):
+        if target_adaptation_time["time_max_sec"] is not None and target_adaptation_time["time_max_sec"] >= threshold:
+            raise ValueError(f"Target adaptation includes a sample at/after {threshold}s.")
+    elif protocol != "full_target_transductive":
+        raise ValueError(f"Unknown data.target_protocol: {protocol}")
     report = {
         "config": args.config,
         "usage": usage,
         "init_checkpoint": str(checkpoint),
         "source_split": source_split,
+        "target_protocol": protocol,
         "target_overlap": overlap,
-        "after5": after5,
+        "target_adaptation_time": target_adaptation_time,
+        "target_test_time": target_test_time,
         "target_loader_returns_label": False,
         "prototype_bank_parameters": 0,
         "datasets": datasets,

@@ -79,6 +79,13 @@ class PrototypeLossWorkflowTests(unittest.TestCase):
             self.assertFalse(config["prototype_losses"]["enabled"])
             self.assertEqual(config["pseudo_filter"]["max_normalized_entropy"], 1.0)
             self.assertEqual(config["adaptation"]["lr"], 0.005)
+            if pair == "ds1_ds2":
+                self.assertEqual(config["data"]["target_protocol"], "first5_adapt_full_test")
+                self.assertEqual(config["data"]["target_test"], config["data"]["target_full_transductive"])
+            else:
+                self.assertEqual(config["data"]["target_protocol"], "full_target_transductive")
+                self.assertEqual(config["data"]["target_unlabeled"], config["data"]["target_test"])
+                self.assertEqual(config["data"]["target_test"], config["data"]["target_full_transductive"])
 
 
 if __name__ == "__main__":

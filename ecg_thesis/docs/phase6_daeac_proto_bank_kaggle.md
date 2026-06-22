@@ -53,12 +53,12 @@ Open `notebooks/phase6_daeac_proto_bank_kaggle.ipynb` and:
 2. Keep `FULL_VARIANTS=['logging_only','weighted_global']` for the complete
    ablation. A single variant may be selected when resuming a failed session.
 3. Run setup, dependency, and input-copy cells.
-4. Run repo/unit checks, after5 creation, and strict protocol validation.
+4. Run repo/unit checks, first-five-minute adaptation-view creation, and protocol validation.
 5. Run both one-epoch smoke tests. Do not continue if either fails.
 6. Run full adaptation. Defaults are 300 epochs, batch size 256, seed 42, and
    paper learning rate 0.005.
 7. Evaluate each source-selected best checkpoint on source validation,
-   DS2-after5, and optional INCART/SVDB.
+   full DS2, and optional INCART/SVDB.
 8. Generate the comparison report and persist the zip under `/kaggle/working`.
 
 W&B is disabled by default. Set `WANDB_ENABLED=True` and configure project,
@@ -119,7 +119,7 @@ prototype_bank_comparison.md
   run and leaves the latest diagnostic checkpoint/log in place.
 
 Do not increase `beta_max`, lower confidence thresholds, or choose a variant
-because of DS2-after5/INCART/SVDB results. Such changes require a predeclared
+because of full-DS2/INCART/SVDB results. Such changes require a predeclared
 source-only or label-free selection rule in a later plan.
 
 ## Local verification before a long run
@@ -127,7 +127,7 @@ source-only or label-free selection rule in a later plan.
 ```bash
 cd ecg_thesis
 python scripts/check_repo.py
-python -m unittest tests.test_daeac_prototype_bank
-python -m unittest tests.test_daeac_prototype_bank_training
-python -m unittest tests.test_daeac_losses tests.test_daeac_hybrid_ablation
+python -m unittest discover -s tests -p "test_daeac_prototype_bank*.py"
+python -m unittest discover -s tests -p "test_daeac_losses.py"
+python -m unittest discover -s tests -p "test_daeac_hybrid_ablation.py"
 ```

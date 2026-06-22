@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 from common import cfg_path, load_phase1_config
-from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, split_daeac_source_fit_val
+from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, load_daeac_source_fit_val
 from src.models.daeac_paper import DAEACNetwork
 
 
@@ -64,9 +64,14 @@ def main() -> None:
     source_train_path = cfg_path(config, "data", "source_train")
     source_eval_path = cfg_path(config, "data", "source_eval")
     if source_train_path.resolve() == source_eval_path.resolve():
-        source_for_split = DAEACDataset(source_train_path, input_key=input_key, label_key=label_key, class_names=class_names)
-        _, _, split_summary = split_daeac_source_fit_val(source_for_split)
-        print(f"source_train/source_eval share one file; record-wise split will be used: {split_summary}")
+        _, _, split_summary = load_daeac_source_fit_val(
+            source_train_path,
+            source_eval_path,
+            input_key=input_key,
+            label_key=label_key,
+            class_names=class_names,
+        )
+        print(f"source_train/source_eval share one file; the complete source is used for fit: {split_summary}")
 
     target = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),

@@ -39,9 +39,10 @@ def main() -> None:
     overlap = audit_daeac_disjoint(
         cfg_path(config, "data", "target_unlabeled"), cfg_path(config, "data", "target_test")
     )
-    after5 = inspect_daeac_time_split(
-        cfg_path(config, "data", "target_test"), float(config["data"]["target_split_seconds"])
-    )
+    threshold = float(config["data"]["target_split_seconds"])
+    protocol = str(config["data"].get("target_protocol", "first5_adapt_after5_test"))
+    target_adaptation_time = inspect_daeac_time_split(cfg_path(config, "data", "target_unlabeled"), threshold)
+    target_test_time = inspect_daeac_time_split(cfg_path(config, "data", "target_test"), threshold)
     checkpoint = cfg_path(config, "adaptation", "init_checkpoint")
     if not checkpoint.exists():
         raise FileNotFoundError(f"Missing source-selected base checkpoint: {checkpoint}")
@@ -55,19 +56,23 @@ def main() -> None:
     )
     if bool(((result.normalized_entropy < 0) | (result.normalized_entropy > 1)).any()):
         raise AssertionError("Normalized entropy escaped [0,1].")
-    threshold = float(config["data"]["target_split_seconds"])
-    if args.strict and not overlap["disjoint"]:
+    if args.strict and protocol == "first5_adapt_after5_test" and not overlap["disjoint"]:
         raise ValueError(f"Strict protocol failed: {overlap['overlap_count']} target samples overlap.")
-    if after5["time_min_sec"] is not None and after5["time_min_sec"] < threshold:
-        raise ValueError(f"Target test includes a sample before {threshold}s: {after5['time_min_sec']}")
+    if protocol.startswith("first5_adapt"):
+        if target_adaptation_time["time_max_sec"] is not None and target_adaptation_time["time_max_sec"] >= threshold:
+            raise ValueError(f"Target adaptation includes a sample at/after {threshold}s.")
+    elif protocol != "full_target_transductive":
+        raise ValueError(f"Unknown data.target_protocol: {protocol}")
     report = {
         "config": args.config,
         "prototype_usage": usage,
         "pseudo_filter": filter_cfg,
         "init_checkpoint": str(checkpoint),
         "target_loader_returns_label": False,
+        "target_protocol": protocol,
         "target_overlap": overlap,
-        "after5": after5,
+        "target_adaptation_time": target_adaptation_time,
+        "target_test_time": target_test_time,
         "clinical_consistency": "deferred_missing_morphology_keys",
     }
     output = cfg_path(config, "paths", "output_dir") / "diagnostics" / "protocol_validation.json"

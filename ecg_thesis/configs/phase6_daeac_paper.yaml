@@ -27,6 +27,9 @@ data:
   label_key: y
   class_names: ["N", "S", "V", "F"]
   num_classes: 4
+  source_usage: full
+  target_protocol: first5_adapt_full_test
+  target_split_seconds: 300.0
 
 model:
   num_classes: 4
@@ -49,7 +52,7 @@ training:
 
 adaptation:
   checkpoint_prefix: daeac_uda
-  init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_latest.pt
+  init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
   epochs: 300
   source_batch_size: 256
   target_batch_size: 256

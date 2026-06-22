@@ -675,7 +675,9 @@ def train_daeac_prototype_bank(
         ),
         "selected_stage": "initialization" if best_epoch == -1 else "adaptation",
         "checkpoint_selection": "source_validation_macro_f1_including_initialization",
-        "target_test_used_during_training": False,
+        "target_labels_used_during_training": False,
+        "target_inputs_overlap_evaluation": str(config["data"].get("target_protocol", ""))
+        in {"first5_adapt_full_test", "full_target_transductive"},
         "pseudo_filter": filter_cfg,
         "final_prototype_diagnostics": _json_bank_diagnostics(bank, class_names),
         "history": history,

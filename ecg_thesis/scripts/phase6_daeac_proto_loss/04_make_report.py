@@ -32,7 +32,7 @@ def _variant_row(name: str, root: Path) -> dict:
     summary = _first_json(root / "metrics", "*_train_summary.json")
     metrics = {
         dataset: _first_json(root / "metrics", f"*_best_{dataset}_metrics.json")
-        for dataset in ("source_val", "target_after5", "incart", "svdb")
+        for dataset in ("source_val", "target_full", "incart", "svdb")
     }
     errors = {}
     confusion = _first_path(root / "metrics", "*_best_source_val_confusion_matrix.csv")
@@ -79,7 +79,7 @@ def _markdown(rows: list[dict]) -> str:
         "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
-        target = (row["metrics"].get("target_after5") or {}).get("macro_f1")
+        target = (row["metrics"].get("target_full") or {}).get("macro_f1")
         lines.append(
             f"| {row['variant']} | {_fmt(row.get('selected_stage'))} | {_fmt(row['best_epoch'])} | "
             f"{_fmt(row.get('init_source_val_macro_f1'))} | {_fmt(row['best_source_val_macro_f1'])} | "

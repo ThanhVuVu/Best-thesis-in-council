@@ -34,7 +34,7 @@ def _variant_row(name: str, root: Path) -> dict:
     summary = _first_json(root / "metrics", "*_train_summary.json")
     metrics = {
         dataset: _first_json(root / "metrics", f"*_best_{dataset}_metrics.json")
-        for dataset in ("source_val", "target_after5", "incart", "svdb")
+        for dataset in ("source_val", "target_full", "incart", "svdb")
     }
     last = (summary or {}).get("history", [{}])[-1] if (summary or {}).get("history") else {}
     return {
@@ -63,7 +63,7 @@ def _markdown(rows: list[dict]) -> str:
         "",
         "Checkpoint selection uses source-validation Macro-F1 only. Target rows are post-training descriptions.",
         "",
-        "| Variant | Best epoch | Source-val F1 | Accept ratio | Empty | All-N | DS2-after5 F1 | INCART F1 | SVDB F1 |",
+        "| Variant | Best epoch | Source-monitor F1 | Accept ratio | Empty | All-N | Full-DS2 F1 | INCART F1 | SVDB F1 |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
@@ -71,7 +71,7 @@ def _markdown(rows: list[dict]) -> str:
         values = [
             row["variant"], row["best_epoch"], row["best_source_val_macro_f1"],
             row["final_acceptance_ratio"], row["final_empty_acceptance"], row["final_all_n"],
-            (metrics["target_after5"] or {}).get("macro_f1"),
+            (metrics["target_full"] or {}).get("macro_f1"),
             (metrics["incart"] or {}).get("macro_f1"), (metrics["svdb"] or {}).get("macro_f1"),
         ]
         lines.append("| " + " | ".join(_fmt(value) for value in values) + " |")

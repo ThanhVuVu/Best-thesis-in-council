@@ -27,7 +27,7 @@ variants:
 Every run starts from the same source-selected `daeac_base_best.pt`. Adaptation
 uses DS2 first-five-minute inputs through `DAEACTargetUnlabeledDataset`, which
 does not return labels. Best checkpoints are selected only by source-validation
-Macro-F1. DS2-after5, INCART, and SVDB labels are post-training descriptions and
+Macro-F1. Full-DS2, INCART, and SVDB labels are post-training descriptions and
 must never select thresholds, weights, margins, epochs, or variants.
 
 The stabilized adaptation path deliberately differs from training from scratch:
@@ -73,8 +73,8 @@ ambiguous checkpoint stops before adaptation.
 Before a long run, the notebook:
 
 1. Runs `scripts/check_repo.py` and DAEAC unit tests.
-2. Creates `mitdb_ds2_after5_daeac.npz` from full DS2.
-3. Proves first5 and after5 are disjoint.
+2. Creates the DS2 first-five-minute adaptation view when it is missing.
+3. Confirms that DS2 adaptation is a subset of full-DS2 evaluation, while cross-dataset adaptation/evaluation use the same complete target inputs with labels hidden during training.
 4. Validates all eight resolved configs and the unlabeled target-loader contract.
 5. Runs isolated one-epoch smoke tests for all variants under
    `/kaggle/working/smoke`.

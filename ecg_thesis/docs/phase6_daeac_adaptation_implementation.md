@@ -16,15 +16,15 @@ Adam uses learning rate `0.005`, weight decay `0.0001`, and a `0.99` learning-ra
 
 | Config | Source pool | Unlabeled adaptation | Held-out target test |
 |---|---|---|---|
-| `phase6_daeac_pair_ds1_ds2.yaml` | MITDB DS1 | DS2 `<300s` | DS2 `>=300s` |
-| `phase6_daeac_pair_ds1_incart.yaml` | MITDB DS1 | INCART `<300s` | INCART `>=300s` |
-| `phase6_daeac_pair_ds1_svdb.yaml` | MITDB DS1 | SVDB `<300s` | SVDB `>=300s` |
-| `phase6_daeac_pair_mitbih_incart.yaml` | MITDB DS1+DS2 | INCART `<300s` | INCART `>=300s` |
-| `phase6_daeac_pair_mitbih_svdb.yaml` | MITDB DS1+DS2 | SVDB `<300s` | SVDB `>=300s` |
+| `phase6_daeac_pair_ds1_ds2.yaml` | All MITDB DS1 | DS2 `<300s` | All DS2 |
+| `phase6_daeac_pair_ds1_incart.yaml` | All MITDB DS1 | All INCART | All INCART |
+| `phase6_daeac_pair_ds1_svdb.yaml` | All MITDB DS1 | All SVDB | All SVDB |
+| `phase6_daeac_pair_mitbih_incart.yaml` | All MITDB DS1+DS2 | All INCART | All INCART |
+| `phase6_daeac_pair_mitbih_svdb.yaml` | All MITDB DS1+DS2 | All SVDB | All SVDB |
 
-Here `MITBIH` means the 44-record `DS1+DS2` source pool after excluding paced records 102, 104, 107, and 217. For source checkpoint selection, four DS1 records remain source-validation records; the other 18 DS1 and all 22 DS2 records form the MITBIH fit partition.
+Here `MITBIH` means the complete 44-record `DS1+DS2` source pool after excluding paced records 102, 104, 107, and 217. Every source record participates in both pretraining and adaptation. Four DS1 records are also used as an overlapping source-only monitoring subset for checkpoint selection; they are not removed from source training.
 
-`00_prepare_after5.py` creates both target partitions from the full target NPZ and rejects any sample overlap. Target labels are never returned by the adaptation dataset.
+For DS1 to DS2, `00_prepare_after5.py` creates the `<300s` unlabeled adaptation view and evaluation uses the complete DS2 file. Cross-dataset runs use the complete target file for both adaptation inputs and final evaluation. In both scenarios `DAEACTargetUnlabeledDataset` hides target labels during training; labels are read only by the evaluation loader.
 
 ## Standard implementation versus ablations
 

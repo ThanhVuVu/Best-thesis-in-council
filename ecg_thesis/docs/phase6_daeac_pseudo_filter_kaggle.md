@@ -31,8 +31,20 @@ daeac_base_best.pt
 `/kaggle/working/Best-thesis-in-council/ecg_thesis`; it never writes under
 `/kaggle/input` and never silently trains a missing baseline.
 
-The preparation cell derives `mitdb_ds2_after5_daeac.npz` from the complete DS2
-file and verifies it is disjoint from the first-five-minute adaptation set.
+The data and checkpoint may be attached separately, including a Kaggle Dataset
+with a nested `daeac/` directory and a Kaggle Model containing
+`daeac_base_best.pt`. By default the notebook discovers both recursively under
+`/kaggle/input`. If multiple matches exist, set the exact mounted paths in the
+setup cell:
+
+```python
+DATA_INPUT_DIR = "/kaggle/input/<dataset-slug>/daeac"
+BASE_CHECKPOINT_INPUT = "/kaggle/input/<model-slug>/<framework>/<version>/daeac_base_best.pt"
+```
+
+The preparation cell derives the first-five-minute adaptation view from the complete
+DS2 file. Final evaluation uses the complete DS2 file, so this intentional overlap
+matches the paper's transductive in-dataset protocol.
 
 ## Smoke and full runs
 
