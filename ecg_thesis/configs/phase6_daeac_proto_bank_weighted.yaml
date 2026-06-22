@@ -1,0 +1,93 @@
+seed: 42
+
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: phase6-daeac-prototype-bank
+    mode: null
+    tags: ["phase6", "daeac", "prototype_bank", "weighted_global"]
+    log_artifacts: false
+
+paths:
+  processed_dir: data/processed/phase6_daeac_paper
+  output_dir: outputs/phase6_daeac_proto_bank_weighted
+
+data:
+  source_train: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
+  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_after5_daeac.npz
+  target_full_transductive: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+  external_targets:
+    incart: data/processed/phase6_daeac_paper/incart_all_daeac.npz
+    svdb: data/processed/phase6_daeac_paper/svdb_all_daeac.npz
+  input_key: auto
+  label_key: y
+  class_names: ["N", "S", "V", "F"]
+  num_classes: 4
+  target_split_seconds: 300.0
+
+model:
+  num_classes: 4
+  input_channels: 1
+  initial_channels: 4
+  dilations: [1, 6, 12, 18]
+  feature_dim: 256
+  se_reduction: 16
+  dropout: 0.0
+
+training:
+  checkpoint_prefix: daeac_base
+  epochs: 300
+  batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: true
+
+adaptation:
+  checkpoint_prefix: daeac_proto_bank_weighted
+  init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
+  epochs: 300
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: true
+  beta1: 0.1
+  beta2: 0.1
+  center_ema_gamma: 0.1
+  margin: 5.0
+  distance: l2
+  pseudo_thresholds:
+    N: 0.999
+    S: 0.99
+    V: 0.99
+    F: 0.99
+
+prototype_bank:
+  enabled: true
+  usage: weighted_global
+  source_momentum: 0.90
+  target_momentum: 0.99
+  reliability_momentum: 0.90
+  reliability_rule: coverage_x_confidence
+  min_target_count: 4
+  beta_max: 0.30
+  rampup_epochs: 10
+  near_all_n_ratio: 0.95
+  fail_on_all_n: true
+  all_n_patience_epochs: 2
+
+comparison:
+  logging_output_dir: outputs/phase6_daeac_proto_bank_logging
+  weighted_output_dir: outputs/phase6_daeac_proto_bank_weighted
+
+evaluation:
+  batch_size: 256
