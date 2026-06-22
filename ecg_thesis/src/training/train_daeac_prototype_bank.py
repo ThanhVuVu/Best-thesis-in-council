@@ -29,6 +29,16 @@ from src.training.daeac_pseudo_filter import (
     update_pseudo_safety_state,
     validate_pseudo_filter_config,
 )
+from src.training.daeac_prototype_losses import (
+    build_margin_matrix,
+    directed_target_alignment_loss,
+    linear_ramp,
+    sample_prototype_margin_loss,
+    source_compactness_loss,
+    target_compactness_loss,
+    target_reliability_weights,
+    validate_prototype_loss_config,
+)
 from src.training.train_daeac_paper import (
     CenterMemory,
     _class_weights,
@@ -56,7 +66,9 @@ def validate_prototype_bank_config(config: dict[str, Any]) -> str:
         raise ValueError(f"prototype_bank.usage must be one of {sorted(VALID_USAGES)}, got '{usage}'.")
     if str(bank_cfg.get("reliability_rule", "")) != "coverage_x_confidence":
         raise ValueError("PLAN 1 supports only reliability_rule=coverage_x_confidence.")
-    validate_pseudo_filter_config(config, list(config.get("data", {}).get("class_names", [])))
+    class_names = list(config.get("data", {}).get("class_names", []))
+    validate_pseudo_filter_config(config, class_names)
+    validate_prototype_loss_config(config, class_names)
     return usage
 
 
@@ -112,6 +124,11 @@ def train_daeac_prototype_bank(
     distance_fn = distance_from_name(str(cfg.get("distance", "l2")))
     thresholds = _threshold_tensor(config, cfg, device)
     filter_cfg = validate_pseudo_filter_config(config, class_names)
+    prototype_loss_cfg = validate_prototype_loss_config(config, class_names)
+    replacement_losses = prototype_loss_cfg.get("mode") == "replacement"
+    margin_matrix = None
+    if replacement_losses:
+        margin_matrix = build_margin_matrix(prototype_loss_cfg, class_names, device, torch.float32)
     filter_enabled = bool(filter_cfg.get("enabled", False))
     filter_thresholds = class_threshold_tensor(filter_cfg, class_names, device) if filter_enabled else thresholds
     bank = build_prototype_bank(config, device)
@@ -178,12 +195,25 @@ def train_daeac_prototype_bank(
         predicted_confidence_sums = torch.zeros(num_classes, device=device)
         predicted_entropy_sums = torch.zeros(num_classes, device=device)
         accepted_entropy_sums = torch.zeros(num_classes, device=device)
+        accepted_weight_sums = torch.zeros(num_classes, device=device)
         rejected_confidence_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
         rejected_entropy_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
         rejected_both_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
         effective_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
         source_skips = torch.zeros(num_classes, dtype=torch.long, device=device)
         target_skips = torch.zeros(num_classes, dtype=torch.long, device=device)
+        source_pair_counts = torch.zeros((num_classes, num_classes), device=device)
+        source_pair_violations = torch.zeros_like(source_pair_counts)
+        target_pair_counts = torch.zeros_like(source_pair_counts)
+        target_pair_violations = torch.zeros_like(source_pair_counts)
+
+        if replacement_losses:
+            ramps = {
+                name: linear_ramp(epoch, int(prototype_loss_cfg["rampup_epochs"][name]))
+                for name in ("proto_align", "comp_source", "comp_target", "sep_margin")
+            }
+        else:
+            ramps = {name: 0.0 for name in ("proto_align", "comp_source", "comp_target", "sep_margin")}
 
         for x_s, y_s in source_loader:
             target_batch = next(target_iter)
@@ -220,9 +250,11 @@ def train_daeac_prototype_bank(
             if bool(confident.any()):
                 selected_x_t = x_t[confident]
                 selected_pseudo_t = pseudo_t[confident]
+                selected_weights_t = target_reliability_weights(confidence_t[confident], entropy_t[confident])
                 z_t = model.extract_features(selected_x_t)
             else:
                 selected_pseudo_t = torch.empty(0, dtype=torch.long, device=device)
+                selected_weights_t = torch.empty(0, device=device)
                 z_t = torch.empty(0, bank.feature_dim, device=device)
 
             source_local, source_counts = dense_batch_prototypes(z_s, y_s, num_classes)
@@ -242,15 +274,45 @@ def train_daeac_prototype_bank(
                 float(cfg["center_ema_gamma"]),
                 num_classes,
             )
-            loss_align = _cluster_align_loss(source_for_loss, target_for_loss, cfg, distance_fn, device)
-            if z_t.numel() > 0:
-                z_mix = torch.cat([z_s, z_t], dim=0)
-                y_mix = torch.cat([y_s, selected_pseudo_t], dim=0)
+            if replacement_losses:
+                replacement = _compute_replacement_losses(
+                    z_s=z_s,
+                    y_s=y_s,
+                    z_t=z_t,
+                    pseudo_t=selected_pseudo_t,
+                    target_weights=selected_weights_t,
+                    candidates=candidates,
+                    cfg=prototype_loss_cfg,
+                    margin_matrix=margin_matrix,
+                    min_target_count=bank.min_target_count,
+                )
+                loss_align = replacement["loss_proto_align"]
+                loss_sep = replacement["loss_sep_margin"]
+                loss_comp = replacement["loss_comp_source"] + replacement["loss_comp_target"]
+                weighted_align = ramps["proto_align"] * float(prototype_loss_cfg["lambda_proto_align"]) * loss_align
+                weighted_comp_source = ramps["comp_source"] * float(prototype_loss_cfg["lambda_comp_source"]) * replacement["loss_comp_source"]
+                weighted_comp_target = ramps["comp_target"] * float(prototype_loss_cfg["lambda_comp_target"]) * replacement["loss_comp_target"]
+                weighted_sep = ramps["sep_margin"] * float(prototype_loss_cfg["lambda_sep_margin"]) * loss_sep
+                loss_total = loss_cls + weighted_align + weighted_comp_source + weighted_comp_target + weighted_sep
+                source_pair_counts += replacement["source_pair_counts"]
+                source_pair_violations += replacement["source_pair_violations"]
+                target_pair_counts += replacement["target_pair_counts"]
+                target_pair_violations += replacement["target_pair_violations"]
             else:
-                z_mix, y_mix = z_s, y_s
-            loss_sep = separating_loss(global_for_loss, float(cfg["margin"]), distance_fn, device)
-            loss_comp = compacting_loss(z_mix, y_mix, global_for_loss, distance_fn, device)
-            loss_total = loss_cls + float(cfg["beta1"]) * loss_align + float(cfg["beta2"]) * (loss_sep + loss_comp)
+                loss_align = _cluster_align_loss(source_for_loss, target_for_loss, cfg, distance_fn, device)
+                if z_t.numel() > 0:
+                    z_mix = torch.cat([z_s, z_t], dim=0)
+                    y_mix = torch.cat([y_s, selected_pseudo_t], dim=0)
+                else:
+                    z_mix, y_mix = z_s, y_s
+                loss_sep = separating_loss(global_for_loss, float(cfg["margin"]), distance_fn, device)
+                loss_comp = compacting_loss(z_mix, y_mix, global_for_loss, distance_fn, device)
+                loss_total = loss_cls + float(cfg["beta1"]) * loss_align + float(cfg["beta2"]) * (loss_sep + loss_comp)
+                replacement = _empty_replacement_metrics(z_s)
+                weighted_align = float(cfg["beta1"]) * loss_align
+                weighted_comp_source = z_s.sum() * 0.0
+                weighted_comp_target = float(cfg["beta2"]) * loss_comp
+                weighted_sep = float(cfg["beta2"]) * loss_sep
             optimizer.zero_grad(set_to_none=True)
             loss_total.backward()
             optimizer.step()
@@ -266,6 +328,7 @@ def train_daeac_prototype_bank(
             if bool(confident.any()):
                 accepted_confidence_sums.scatter_add_(0, selected_pseudo_t, confidence_t[confident])
                 accepted_entropy_sums.scatter_add_(0, selected_pseudo_t, entropy_t[confident])
+                accepted_weight_sums.scatter_add_(0, selected_pseudo_t, selected_weights_t)
             _scatter_mask_counts(rejected_confidence_counts, pseudo_t, reject_confidence)
             _scatter_mask_counts(rejected_entropy_counts, pseudo_t, reject_entropy)
             _scatter_mask_counts(rejected_both_counts, pseudo_t, reject_both)
@@ -276,6 +339,24 @@ def train_daeac_prototype_bank(
                     "loss_align": float(loss_align.detach().cpu()),
                     "loss_sep": float(loss_sep.detach().cpu()),
                     "loss_comp": float(loss_comp.detach().cpu()),
+                    "loss_proto_align": float(replacement["loss_proto_align"].detach().cpu()),
+                    "loss_comp_source": float(replacement["loss_comp_source"].detach().cpu()),
+                    "loss_comp_target": float(replacement["loss_comp_target"].detach().cpu()),
+                    "loss_sep_margin": float(replacement["loss_sep_margin"].detach().cpu()),
+                    "loss_sep_source": float(replacement["loss_sep_source"].detach().cpu()),
+                    "loss_sep_target": float(replacement["loss_sep_target"].detach().cpu()),
+                    "weighted_proto_align": float(weighted_align.detach().cpu()),
+                    "weighted_comp_source": float(weighted_comp_source.detach().cpu()),
+                    "weighted_comp_target": float(weighted_comp_target.detach().cpu()),
+                    "weighted_sep_margin": float(weighted_sep.detach().cpu()),
+                    "active_source_comp_samples": float(replacement["active_source_comp_samples"].detach().cpu()),
+                    "active_target_comp_samples": float(replacement["active_target_comp_samples"].detach().cpu()),
+                    "active_align_classes": float(replacement["active_align_classes"].detach().cpu()),
+                    "active_source_sep_samples": float(replacement["active_source_sep_samples"].detach().cpu()),
+                    "active_target_sep_samples": float(replacement["active_target_sep_samples"].detach().cpu()),
+                    "source_margin_violation_ratio": float(replacement["source_margin_violation_ratio"].detach().cpu()),
+                    "target_margin_violation_ratio": float(replacement["target_margin_violation_ratio"].detach().cpu()),
+                    "target_weight_mean": float(selected_weights_t.mean().detach().cpu()) if selected_weights_t.numel() else 0.0,
                     "pseudo_selected": float(confident.sum().detach().cpu()),
                 }
             )
@@ -314,6 +395,28 @@ def train_daeac_prototype_bank(
                 "prototype/ramp": float(reliability["ramp"]),
                 "prototype/valid_source": float(bank.source_valid.sum()),
                 "prototype/valid_target": float(bank.target_valid.sum()),
+                "prototype_loss/mode_replacement": float(replacement_losses),
+                "prototype_loss/ramp_proto_align": ramps["proto_align"],
+                "prototype_loss/ramp_comp_source": ramps["comp_source"],
+                "prototype_loss/ramp_comp_target": ramps["comp_target"],
+                "prototype_loss/ramp_sep_margin": ramps["sep_margin"],
+                "prototype_loss/effective_lambda_proto_align": ramps["proto_align"] * float(prototype_loss_cfg.get("lambda_proto_align", 0.0)),
+                "prototype_loss/effective_lambda_comp_source": ramps["comp_source"] * float(prototype_loss_cfg.get("lambda_comp_source", 0.0)),
+                "prototype_loss/effective_lambda_comp_target": ramps["comp_target"] * float(prototype_loss_cfg.get("lambda_comp_target", 0.0)),
+                "prototype_loss/effective_lambda_sep_margin": ramps["sep_margin"] * float(prototype_loss_cfg.get("lambda_sep_margin", 0.0)),
+                "prototype_loss/non_finite": float(
+                    not all(
+                        np.isfinite(row[key])
+                        for key in (
+                            "loss",
+                            "loss_cls",
+                            "loss_proto_align",
+                            "loss_comp_source",
+                            "loss_comp_target",
+                            "loss_sep_margin",
+                        )
+                    )
+                ),
             }
         )
         _add_class_diagnostics(
@@ -326,6 +429,7 @@ def train_daeac_prototype_bank(
             predicted_confidence_sums,
             predicted_entropy_sums,
             accepted_entropy_sums,
+            accepted_weight_sums,
             rejected_confidence_counts,
             rejected_entropy_counts,
             rejected_both_counts,
@@ -333,6 +437,14 @@ def train_daeac_prototype_bank(
             source_skips,
             target_skips,
             reliability,
+        )
+        _add_pair_diagnostics(
+            row,
+            class_names,
+            source_pair_counts,
+            source_pair_violations,
+            target_pair_counts,
+            target_pair_violations,
         )
         history.append(row)
         _write_history_csv(history, history_path)
@@ -445,6 +557,117 @@ def _centers_for_usage(
     return legacy_memory.centers_for_loss(local_source, local_target, gamma)
 
 
+def _compute_replacement_losses(
+    z_s,
+    y_s,
+    z_t,
+    pseudo_t,
+    target_weights,
+    candidates,
+    cfg,
+    margin_matrix,
+    min_target_count,
+):
+    zero = z_s.sum() * 0.0
+    empty_pair = torch.zeros_like(margin_matrix)
+
+    if bool(cfg.get("use_comp_source", False)):
+        loss_comp_source, comp_source_diag = source_compactness_loss(
+            z_s, y_s, candidates.source, candidates.source_valid
+        )
+    else:
+        loss_comp_source = zero
+        comp_source_diag = {"active_samples": zero.detach()}
+
+    if bool(cfg.get("use_comp_target", False)):
+        loss_comp_target, comp_target_diag = target_compactness_loss(
+            z_t, pseudo_t, candidates.global_, candidates.global_valid, target_weights
+        )
+    else:
+        loss_comp_target = z_t.sum() * 0.0
+        comp_target_diag = {"active_samples": zero.detach()}
+
+    if bool(cfg.get("use_proto_align", False)):
+        loss_align, align_diag = directed_target_alignment_loss(
+            z_t,
+            pseudo_t,
+            target_weights,
+            candidates.source,
+            candidates.source_valid,
+            min_target_count,
+        )
+    else:
+        loss_align = z_t.sum() * 0.0
+        align_diag = {"active_classes": zero.detach()}
+
+    if bool(cfg.get("use_sep_margin", False)):
+        loss_sep_source, source_sep_diag = sample_prototype_margin_loss(
+            z_s, y_s, candidates.source, candidates.source_valid, margin_matrix
+        )
+        loss_sep_target, target_sep_diag = sample_prototype_margin_loss(
+            z_t,
+            pseudo_t,
+            candidates.global_,
+            candidates.global_valid,
+            margin_matrix,
+            sample_weights=target_weights,
+        )
+        if float(target_sep_diag["active_samples"]) > 0.0:
+            loss_sep = 0.5 * (loss_sep_source + loss_sep_target)
+        else:
+            loss_sep = loss_sep_source
+    else:
+        loss_sep_source = zero
+        loss_sep_target = z_t.sum() * 0.0
+        loss_sep = zero
+        source_sep_diag = {
+            "active_samples": zero.detach(),
+            "pair_counts": empty_pair,
+            "pair_violations": empty_pair,
+            "violation_ratio": zero.detach(),
+        }
+        target_sep_diag = dict(source_sep_diag)
+
+    return {
+        "loss_proto_align": loss_align,
+        "loss_comp_source": loss_comp_source,
+        "loss_comp_target": loss_comp_target,
+        "loss_sep_margin": loss_sep,
+        "loss_sep_source": loss_sep_source,
+        "loss_sep_target": loss_sep_target,
+        "active_source_comp_samples": comp_source_diag["active_samples"],
+        "active_target_comp_samples": comp_target_diag["active_samples"],
+        "active_align_classes": align_diag["active_classes"],
+        "active_source_sep_samples": source_sep_diag["active_samples"],
+        "active_target_sep_samples": target_sep_diag["active_samples"],
+        "source_margin_violation_ratio": source_sep_diag["violation_ratio"],
+        "target_margin_violation_ratio": target_sep_diag["violation_ratio"],
+        "source_pair_counts": source_sep_diag["pair_counts"],
+        "source_pair_violations": source_sep_diag["pair_violations"],
+        "target_pair_counts": target_sep_diag["pair_counts"],
+        "target_pair_violations": target_sep_diag["pair_violations"],
+    }
+
+
+def _empty_replacement_metrics(features):
+    zero = features.sum() * 0.0
+    return {
+        "loss_proto_align": zero,
+        "loss_comp_source": zero,
+        "loss_comp_target": zero,
+        "loss_sep_margin": zero,
+        "loss_sep_source": zero,
+        "loss_sep_target": zero,
+        "active_source_comp_samples": zero.detach(),
+        "active_target_comp_samples": zero.detach(),
+        "active_align_classes": zero.detach(),
+        "active_source_sep_samples": zero.detach(),
+        "active_target_sep_samples": zero.detach(),
+        "source_margin_violation_ratio": zero.detach(),
+        "target_margin_violation_ratio": zero.detach(),
+    }
+
+
 @torch.no_grad()
 def _global_source_prototypes(
     model,
@@ -482,6 +705,7 @@ def _add_class_diagnostics(
     predicted_confidence_sums,
     predicted_entropy_sums,
     accepted_entropy_sums,
+    accepted_weight_sums,
     rejected_confidence,
     rejected_entropy,
     rejected_both,
@@ -511,6 +735,9 @@ def _add_class_diagnostics(
         row[f"pseudo/mean_accepted_entropy_{name}"] = (
             float(accepted_entropy_sums[index] / accepted[index]) if accepted_count else 0.0
         )
+        row[f"prototype_loss/mean_target_weight_{name}"] = (
+            float(accepted_weight_sums[index] / accepted[index]) if accepted_count else 0.0
+        )
         row[f"pseudo/rejected_confidence_{name}"] = float(rejected_confidence[index])
         row[f"pseudo/rejected_entropy_{name}"] = float(rejected_entropy[index])
         row[f"pseudo/rejected_both_{name}"] = float(rejected_both[index])
@@ -528,6 +755,22 @@ def _add_class_diagnostics(
         row[f"prototype/ps_norm_{name}"] = float(diagnostics["source_norm"][index])
         row[f"prototype/pt_norm_{name}"] = float(diagnostics["target_norm"][index])
         row[f"prototype/pg_norm_{name}"] = float(diagnostics["global_norm"][index])
+        row[f"prototype/source_valid_{name}"] = float(bank.source_valid[index])
+        row[f"prototype/target_valid_{name}"] = float(bank.target_valid[index])
+
+
+def _add_pair_diagnostics(row, class_names, source_counts, source_violations, target_counts, target_violations):
+    for positive, positive_name in enumerate(class_names):
+        for negative, negative_name in enumerate(class_names):
+            if positive == negative:
+                continue
+            for domain, counts, violations in (
+                ("source", source_counts, source_violations),
+                ("target", target_counts, target_violations),
+            ):
+                count = float(counts[positive, negative])
+                ratio = float(violations[positive, negative] / counts[positive, negative]) if count else 0.0
+                row[f"prototype_loss/{domain}_margin_violation_{positive_name}_{negative_name}"] = ratio
 
 
 def _json_bank_diagnostics(bank, class_names):

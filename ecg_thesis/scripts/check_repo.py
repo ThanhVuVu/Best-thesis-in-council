@@ -78,6 +78,11 @@ def _check_configs() -> list[str]:
         if not isinstance(data, dict):
             errors.append(f"Config is not a mapping: {path.relative_to(ROOT)}")
             continue
+        if "extends" in data:
+            parent = path.parent / str(data["extends"])
+            if not parent.exists():
+                errors.append(f"Config extends missing file: {path.relative_to(ROOT)} -> {data['extends']}")
+            continue
         for key in ("paths", "data"):
             if key not in data:
                 errors.append(f"Config missing '{key}': {path.relative_to(ROOT)}")

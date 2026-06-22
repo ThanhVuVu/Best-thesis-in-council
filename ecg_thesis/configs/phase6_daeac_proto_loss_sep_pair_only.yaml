@@ -1,0 +1,9 @@
+extends: phase6_daeac_proto_loss_base.yaml
+paths: {output_dir: outputs/phase6_daeac_proto_loss_sep_pair_only}
+adaptation: {checkpoint_prefix: daeac_proto_loss_sep_pair_only}
+prototype_losses:
+  use_proto_align: false
+  use_comp_source: false
+  use_comp_target: false
+  use_sep_margin: true
+  use_pair_margin: true

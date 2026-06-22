@@ -1,0 +1,11 @@
+extends: phase6_daeac_proto_loss_base.yaml
+paths: {output_dir: outputs/phase6_daeac_proto_loss_legacy_control}
+adaptation: {checkpoint_prefix: daeac_proto_loss_legacy_control}
+prototype_losses:
+  enabled: false
+  mode: legacy
+  use_proto_align: false
+  use_comp_source: false
+  use_comp_target: false
+  use_sep_margin: false
+  use_pair_margin: false

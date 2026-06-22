@@ -1,0 +1,128 @@
+seed: 42
+
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: phase6-daeac-prototype-loss
+    mode: null
+    tags: ["phase6", "daeac", "prototype_loss"]
+    log_artifacts: false
+
+paths:
+  processed_dir: data/processed/phase6_daeac_paper
+  output_dir: outputs/phase6_daeac_proto_loss_base
+
+data:
+  source_train: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
+  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_after5_daeac.npz
+  target_full_transductive: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+  external_targets:
+    incart: data/processed/phase6_daeac_paper/incart_all_daeac.npz
+    svdb: data/processed/phase6_daeac_paper/svdb_all_daeac.npz
+  input_key: auto
+  label_key: y
+  class_names: ["N", "S", "V", "F"]
+  num_classes: 4
+  target_split_seconds: 300.0
+
+model:
+  num_classes: 4
+  input_channels: 1
+  initial_channels: 4
+  dilations: [1, 6, 12, 18]
+  feature_dim: 256
+  se_reduction: 16
+  dropout: 0.0
+
+training:
+  checkpoint_prefix: daeac_base
+  epochs: 300
+  batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: true
+
+adaptation:
+  checkpoint_prefix: daeac_proto_loss_base
+  init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
+  epochs: 300
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: true
+  beta1: 0.1
+  beta2: 0.1
+  center_ema_gamma: 0.1
+  margin: 5.0
+  distance: l2
+  pseudo_thresholds: {N: 0.999, S: 0.99, V: 0.99, F: 0.99}
+
+prototype_bank:
+  enabled: true
+  usage: weighted_global
+  source_momentum: 0.90
+  target_momentum: 0.99
+  reliability_momentum: 0.90
+  reliability_rule: coverage_x_confidence
+  min_target_count: 4
+  beta_max: 0.30
+  rampup_epochs: 10
+  near_all_n_ratio: 0.95
+  fail_on_all_n: true
+  all_n_patience_epochs: 2
+
+pseudo_filter:
+  enabled: true
+  mode: class_specific
+  global_confidence_threshold: 0.99
+  class_confidence_thresholds: {N: 0.999, S: 0.99, V: 0.99, F: 0.99}
+  max_normalized_entropy: 0.05
+  near_all_n_ratio: 0.95
+  fail_on_empty: true
+  fail_on_all_n: true
+  safety_patience_epochs: 2
+
+prototype_losses:
+  enabled: true
+  mode: replacement
+  use_proto_align: true
+  use_comp_source: true
+  use_comp_target: true
+  use_sep_margin: true
+  use_pair_margin: true
+  target_weight_mode: confidence_x_inverse_entropy
+  lambda_proto_align: 0.10
+  lambda_comp_source: 0.10
+  lambda_comp_target: 0.05
+  lambda_sep_margin: 0.05
+  rampup_epochs: {proto_align: 10, comp_source: 1, comp_target: 10, sep_margin: 10}
+  uniform_margin: 5.0
+  pair_margin:
+    N: {N: 0.0, S: 7.5, V: 5.0, F: 7.5}
+    S: {N: 7.5, S: 0.0, V: 5.0, F: 5.0}
+    V: {N: 5.0, S: 5.0, V: 0.0, F: 5.0}
+    F: {N: 7.5, S: 5.0, V: 5.0, F: 0.0}
+
+comparison:
+  variants:
+    legacy_control: outputs/phase6_daeac_proto_loss_legacy_control
+    align_only: outputs/phase6_daeac_proto_loss_align_only
+    comp_source_only: outputs/phase6_daeac_proto_loss_comp_source_only
+    comp_target_only: outputs/phase6_daeac_proto_loss_comp_target_only
+    sep_uniform_only: outputs/phase6_daeac_proto_loss_sep_uniform_only
+    sep_pair_only: outputs/phase6_daeac_proto_loss_sep_pair_only
+    full_uniform: outputs/phase6_daeac_proto_loss_full_uniform
+    full_pair: outputs/phase6_daeac_proto_loss_full_pair
+
+evaluation:
+  batch_size: 256
