@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
 
-from src.data.splits import mitbih_fit_val_records
+from src.data.splits import MITBIH_TEST_RECORDS, mitbih_fit_val_records
 
 PAPER_CLASS_NAMES = ["N", "S", "V", "F"]
 REFERENCE_REPO_CLASS_NAMES = ["N", "V", "S", "F"]
@@ -163,6 +163,12 @@ def split_daeac_source_fit_val(dataset: DAEACDataset) -> tuple[Subset, Subset, d
 
     record_strings = np.asarray([str(value) for value in records])
     fit_records, val_records = mitbih_fit_val_records()
+    # For the MITBIH source-pool experiments, DS1+DS2 is the source corpus.
+    # Keep the four-record DS1 validation set and add every DS2 record to fit.
+    present_set = set(record_strings)
+    ds2_present = [record for record in MITBIH_TEST_RECORDS if record in present_set]
+    if ds2_present:
+        fit_records = [*fit_records, *ds2_present]
     fit_set = set(fit_records)
     val_set = set(val_records)
     fit_idx = [idx for idx, rec in enumerate(record_strings) if rec in fit_set]
@@ -173,6 +179,43 @@ def split_daeac_source_fit_val(dataset: DAEACDataset) -> tuple[Subset, Subset, d
             "DAEAC source fit/validation split is empty. "
             f"Expected fit records={fit_records}, val records={val_records}, present records={present}."
         )
+
+
+class DAEACPseudoLabeledDataset(Dataset):
+    """Immutable per-epoch view of confidently pseudo-labeled target samples."""
+
+    def __init__(
+        self,
+        target_dataset: Dataset,
+        positions: torch.Tensor,
+        labels: torch.Tensor,
+        confidence: torch.Tensor | None = None,
+        normalized_entropy: torch.Tensor | None = None,
+    ):
+        self.target_dataset = target_dataset
+        self.positions = torch.as_tensor(positions, dtype=torch.long).cpu()
+        self.labels = torch.as_tensor(labels, dtype=torch.long).cpu()
+        self.confidence = _optional_snapshot_tensor(confidence, len(self.labels), default=1.0)
+        self.normalized_entropy = _optional_snapshot_tensor(normalized_entropy, len(self.labels), default=0.0)
+        if len(self.positions) != len(self.labels):
+            raise ValueError("Pseudo-label positions and labels must have equal length.")
+
+    def __len__(self) -> int:
+        return int(len(self.labels))
+
+    def __getitem__(self, idx: int):
+        item = self.target_dataset[int(self.positions[idx])]
+        x = item[0] if isinstance(item, (tuple, list)) else item
+        return x, self.labels[idx], self.confidence[idx], self.normalized_entropy[idx]
+
+
+def _optional_snapshot_tensor(value: torch.Tensor | None, length: int, default: float) -> torch.Tensor:
+    if value is None:
+        return torch.full((length,), float(default), dtype=torch.float32)
+    result = torch.as_tensor(value, dtype=torch.float32).cpu()
+    if len(result) != length:
+        raise ValueError("Pseudo-label metadata must have the same length as labels.")
+    return result
 
     fit_present = set(record_strings[fit_idx])
     val_present = set(record_strings[val_idx])

@@ -7,9 +7,9 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 
-from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset
+from src.data.daeac_dataset import DAEACDataset, DAEACPseudoLabeledDataset, DAEACTargetUnlabeledDataset
 from src.models.daeac_paper import ClassifierH, DAEACNetwork
 from src.training.daeac_losses import (
     build_daeac_classification_loss,
@@ -130,7 +130,7 @@ def adapt_daeac(
         load_daeac_checkpoint(init_checkpoint, config, device, model=model)
 
     source_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=True, num_workers=0)
-    target_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=True, num_workers=0)
+    target_inference_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
@@ -141,16 +141,26 @@ def adapt_daeac(
     )
     distance_fn = distance_from_name(str(cfg.get("distance", "l2")))
     thresholds = _threshold_tensor(config, cfg, device)
-    center_memory = CenterMemory(int(config["data"]["num_classes"]), int(config["model"]["feature_dim"]), device)
-    center_memory.source = compute_global_source_centers(model, source_loader, device, center_memory.num_classes)
-    center_memory.target = compute_global_target_centers(model, target_loader, device, center_memory.num_classes, thresholds)
-    center_memory.refresh_mixed()
-    _prepare_center_mkmmd_config(cfg, center_memory)
     aux_classifier = ClassifierH(
         feature_dim=int(config["model"]["feature_dim"]),
         num_classes=int(config["data"]["num_classes"]),
-        dropout=0.0,
+        dropout=float(config["model"].get("dropout", 0.0)),
     ).to(device)
+    aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
+    aux_classifier.eval()
+    pseudo_dataset = build_pseudo_labeled_target_dataset(
+        model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
+    )
+    center_memory = CenterMemory(int(config["data"]["num_classes"]), int(config["model"]["feature_dim"]), device)
+    center_memory.source = compute_global_source_centers(model, source_loader, device, center_memory.num_classes)
+    center_memory.target = compute_global_pseudo_target_centers(
+        model,
+        DataLoader(pseudo_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0),
+        device,
+        center_memory.num_classes,
+    )
+    center_memory.refresh_mixed()
+    _prepare_center_mkmmd_config(cfg, center_memory)
     wandb_run = init_wandb(config, job_type="adapt_daeac", default_name=prefix)
 
     latest_path = ckpt_dir / f"{prefix}_latest.pt"
@@ -161,35 +171,25 @@ def adapt_daeac(
     global_step = 0
     for epoch in range(int(cfg["epochs"])):
         model.train()
-        aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
-        aux_classifier.eval()
-        target_iter = _cycle(target_loader)
+        target_loader = DataLoader(
+            pseudo_dataset,
+            batch_size=int(cfg["target_batch_size"]),
+            shuffle=True,
+            num_workers=0,
+        )
+        source_iter = _cycle(source_loader)
         epoch_rows: list[dict[str, float]] = []
-        pseudo_counts = np.zeros(center_memory.num_classes, dtype=np.int64)
-        for x_s, y_s in source_loader:
-            x_t_batch = next(target_iter)
-            x_t = x_t_batch[0] if isinstance(x_t_batch, (tuple, list)) else x_t_batch
+        pseudo_counts = np.bincount(pseudo_dataset.labels.numpy(), minlength=center_memory.num_classes)
+        for x_t, pseudo_t, _, _ in target_loader:
+            x_s, y_s = next(source_iter)
             x_s = x_s.to(device)
             y_s = y_s.to(device)
             x_t = x_t.to(device)
+            selected_pseudo_t = pseudo_t.to(device)
 
             z_s, logits_s, _ = model(x_s, return_logits=True)
             loss_cls = weighted_cross_entropy_from_logits(logits_s, y_s, class_weights)
-
-            with torch.no_grad():
-                z_t_all = model.extract_features(x_t)
-                _, probs_t = aux_classifier(z_t_all, return_logits=True)
-                conf_t, pseudo_t = probs_t.max(dim=1)
-                confident = conf_t >= thresholds[pseudo_t]
-
-            if bool(confident.any()):
-                selected_x_t = x_t[confident]
-                selected_pseudo_t = pseudo_t[confident]
-                z_t = model.extract_features(selected_x_t)
-                pseudo_counts += np.bincount(selected_pseudo_t.detach().cpu().numpy(), minlength=center_memory.num_classes)
-            else:
-                selected_pseudo_t = torch.empty(0, dtype=torch.long, device=device)
-                z_t = torch.empty(0, center_memory.feature_dim, device=device)
+            z_t = model.extract_features(x_t)
 
             local_source = batch_centers(z_s, y_s, center_memory.num_classes)
             local_target = batch_centers(z_t, selected_pseudo_t, center_memory.num_classes)
@@ -206,8 +206,9 @@ def adapt_daeac(
             else:
                 z_mix = z_s
                 y_mix = y_s
-            loss_sep = separating_loss(mixed_for_loss, float(cfg["margin"]), distance_fn, device)
-            loss_comp = compacting_loss(z_mix, y_mix, mixed_for_loss, distance_fn, device)
+            reduction = str(cfg.get("cluster_loss_reduction", "sum"))
+            loss_sep = separating_loss(mixed_for_loss, float(cfg["margin"]), distance_fn, device, reduction=reduction)
+            loss_comp = compacting_loss(z_mix, y_mix, mixed_for_loss, distance_fn, device, reduction=reduction)
             loss_total = loss_cls + float(cfg["beta1"]) * loss_align + float(cfg["beta2"]) * (loss_sep + loss_comp)
 
             optimizer.zero_grad(set_to_none=True)
@@ -223,7 +224,7 @@ def adapt_daeac(
                     "loss_align": float(loss_align.detach().cpu()),
                     "loss_sep": float(loss_sep.detach().cpu()),
                     "loss_comp": float(loss_comp.detach().cpu()),
-                    "pseudo_selected": float(confident.sum().detach().cpu()),
+                    "pseudo_selected": float(len(selected_pseudo_t)),
                 }
             )
 
@@ -252,6 +253,13 @@ def adapt_daeac(
             f"[uda epoch {epoch + 1}/{cfg['epochs']}] loss={row['loss']:.4f} "
             f"align={row['loss_align']:.4f} sep={row['loss_sep']:.4f} comp={row['loss_comp']:.4f} "
             f"val_macro_f1={row['val_macro_f1']:.4f} pseudo={row['pseudo_counts']}"
+        )
+        # Epoch boundary: synchronize h <- H, then freeze a complete target
+        # pseudo-label snapshot for the next epoch.
+        aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
+        aux_classifier.eval()
+        pseudo_dataset = build_pseudo_labeled_target_dataset(
+            model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
         )
 
     summary = {
@@ -422,13 +430,78 @@ def compute_global_target_centers(
             x = batch[0] if isinstance(batch, (tuple, list)) else batch
             features, _, probs = model(x.to(device), return_logits=True)
             conf, pseudo = probs.max(dim=1)
-            confident = conf >= thresholds[pseudo]
+            confident = conf > thresholds[pseudo]
             for cls in range(num_classes):
                 mask = (pseudo == cls) & confident
                 if bool(mask.any()):
                     sums[cls] += features[mask].sum(dim=0)
                     counts[cls] += int(mask.sum().item())
     return [sums[cls] / counts[cls] if counts[cls] > 0 else None for cls in range(num_classes)]
+
+
+def compute_global_pseudo_target_centers(
+    model: DAEACNetwork,
+    loader: DataLoader,
+    device: torch.device,
+    num_classes: int,
+) -> list[torch.Tensor | None]:
+    sums = [torch.zeros(model.feature_dim, device=device) for _ in range(num_classes)]
+    counts = [0 for _ in range(num_classes)]
+    model.eval()
+    with torch.no_grad():
+        for x, pseudo, *_ in loader:
+            features = model.extract_features(x.to(device))
+            pseudo = pseudo.to(device)
+            for cls in range(num_classes):
+                mask = pseudo == cls
+                if bool(mask.any()):
+                    sums[cls] += features[mask].sum(dim=0)
+                    counts[cls] += int(mask.sum().item())
+    return [sums[cls] / counts[cls] if counts[cls] > 0 else None for cls in range(num_classes)]
+
+
+def build_pseudo_labeled_target_dataset(
+    model: DAEACNetwork,
+    aux_classifier: ClassifierH,
+    target_dataset: Dataset,
+    inference_loader: DataLoader,
+    thresholds: torch.Tensor,
+    device: torch.device,
+) -> DAEACPseudoLabeledDataset:
+    """Infer all target samples once and return an immutable confident subset."""
+    positions: list[torch.Tensor] = []
+    labels: list[torch.Tensor] = []
+    confidences: list[torch.Tensor] = []
+    entropies: list[torch.Tensor] = []
+    offset = 0
+    model.eval()
+    aux_classifier.eval()
+    with torch.no_grad():
+        for batch in inference_loader:
+            x = batch[0] if isinstance(batch, (tuple, list)) else batch
+            x = x.to(device)
+            features = model.extract_features(x)
+            _, probabilities = aux_classifier(features, return_logits=True)
+            confidence, pseudo = probabilities.max(dim=1)
+            accepted = confidence > thresholds[pseudo]
+            entropy = -(probabilities * probabilities.clamp_min(torch.finfo(probabilities.dtype).tiny).log()).sum(dim=1)
+            entropy = entropy / np.log(probabilities.shape[1])
+            local_positions = torch.arange(offset, offset + len(x), device=device)
+            positions.append(local_positions[accepted].cpu())
+            labels.append(pseudo[accepted].cpu())
+            confidences.append(confidence[accepted].cpu())
+            entropies.append(entropy[accepted].cpu())
+            offset += len(x)
+    accepted_count = sum(len(value) for value in labels)
+    if accepted_count == 0:
+        raise RuntimeError("No target samples passed the strict class-specific pseudo-label thresholds.")
+    return DAEACPseudoLabeledDataset(
+        target_dataset,
+        torch.cat(positions),
+        torch.cat(labels),
+        torch.cat(confidences),
+        torch.cat(entropies),
+    )
 
 
 def batch_centers(features: torch.Tensor, labels: torch.Tensor, num_classes: int) -> list[torch.Tensor | None]:
@@ -488,7 +561,13 @@ def _cluster_align_loss(
 ) -> torch.Tensor:
     align_loss = str(cfg.get("align_loss", "l2")).lower()
     if align_loss in {"l2", "distance"}:
-        return cluster_aligning_loss(source_centers, target_centers, distance_fn, device)
+        return cluster_aligning_loss(
+            source_centers,
+            target_centers,
+            distance_fn,
+            device,
+            reduction=str(cfg.get("cluster_loss_reduction", "sum")),
+        )
     if align_loss == "mkmmd_center":
         return center_cluster_mk_mmd_loss(source_centers, target_centers, dict(cfg.get("mkmmd", {})), device)
     raise ValueError(f"Unknown DAEAC align_loss: {align_loss}")

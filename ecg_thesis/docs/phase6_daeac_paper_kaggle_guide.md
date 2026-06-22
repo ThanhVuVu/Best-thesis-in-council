@@ -33,7 +33,9 @@ incart_all_daeac.npz
 svdb_all_daeac.npz
 ```
 
-The default config runs the MITDB DS1 -> DS2 paper experiment.
+The default config runs the MITDB DS1 -> DS2 paper experiment. For all five
+domain-pair runs, use `configs/phase6_daeac_pair_*.yaml`; the complete lifecycle
+and split protocol are in `docs/phase6_daeac_adaptation_implementation.md`.
 
 The default config uses `input_key: auto`, which detects common keys such as
 `x_daeac`, `x_macnn`, `x`, `X`, `inputs`, `data`, `samples`, or `beats`. Edit

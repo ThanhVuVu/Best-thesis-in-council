@@ -50,14 +50,14 @@ training:
   use_class_weights: true
 
 adaptation:
-  training_semantics_version: 2
+  training_semantics_version: 3
   checkpoint_prefix: daeac_proto_loss_base
   init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
   epochs: 300
   source_batch_size: 256
   target_batch_size: 256
-  # Fine-tuning starts from a source-selected checkpoint, not random weights.
-  lr: 0.0001
+  # Paper-faithful adaptation learning rate.
+  lr: 0.005
   weight_decay: 0.0001
   lr_decay_gamma: 0.99
   lr_decay_every_steps: 200
@@ -67,6 +67,7 @@ adaptation:
   center_ema_gamma: 0.1
   margin: 5.0
   distance: l2
+  cluster_loss_reduction: sum
   batchnorm_mode: freeze_all
   target_forward_mode: single
   epoch_driver: target_once

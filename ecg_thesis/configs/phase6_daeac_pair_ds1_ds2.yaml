@@ -1,0 +1,13 @@
+extends: phase6_daeac_pair_base.yaml
+domain_pair: ds1_ds2
+paths: {output_dir: outputs/phase6_daeac_pair_ds1_ds2}
+data:
+  source_train: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
+  target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
+  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_after5_daeac.npz
+  target_full_transductive: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+training: {checkpoint_prefix: daeac_base_ds1}
+adaptation:
+  checkpoint_prefix: daeac_ds1_ds2
+  init_checkpoint: outputs/phase6_daeac_pair_ds1_ds2/checkpoints/daeac_base_ds1_best.pt

@@ -63,6 +63,7 @@ adaptation:
   center_ema_gamma: 0.1
   margin: 5.0
   distance: l2
+  cluster_loss_reduction: sum
   pseudo_thresholds:
     N: 0.999
     S: 0.99

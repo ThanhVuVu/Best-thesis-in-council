@@ -98,9 +98,9 @@ def filter_target_pseudolabels(
     confidence_ok = torch.ones_like(confidence, dtype=torch.bool)
     entropy_ok = torch.ones_like(confidence, dtype=torch.bool)
     if mode in {"confidence_global", "confidence_entropy"}:
-        confidence_ok = confidence >= float(global_confidence_threshold)
+        confidence_ok = confidence > float(global_confidence_threshold)
     elif mode == "class_specific":
-        confidence_ok = confidence >= thresholds[pseudo_labels]
+        confidence_ok = confidence > thresholds[pseudo_labels]
     if mode in {"confidence_entropy", "class_specific"}:
         entropy_ok = entropy <= float(max_normalized_entropy)
 

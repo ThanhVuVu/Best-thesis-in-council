@@ -1,0 +1,36 @@
+extends: phase6_daeac_proto_loss_legacy_control.yaml
+
+# Shared paper-faithful adaptation semantics for the five source-target runs.
+adaptation:
+  epochs: 300
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  beta1: 0.1
+  beta2: 0.1
+  center_ema_gamma: 0.1
+  cluster_loss_reduction: sum
+  epoch_driver: target_once
+  target_forward_mode: single
+
+# logging_only selects the original EMA CenterMemory for losses; the bank is
+# retained only for diagnostics and does not replace the DAEAC centers.
+prototype_bank:
+  usage: logging_only
+
+# Class-specific confidence only. Entropy=1 accepts the full valid range.
+pseudo_filter:
+  mode: class_specific
+  max_normalized_entropy: 1.0
+
+prototype_losses:
+  enabled: false
+  mode: legacy
+  use_proto_align: false
+  use_comp_source: false
+  use_comp_target: false
+  use_sep_margin: false
+  use_pair_margin: false

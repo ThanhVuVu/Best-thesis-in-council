@@ -80,13 +80,14 @@ def cluster_aligning_loss(
     target_centers: list[torch.Tensor | None],
     distance_fn,
     device: torch.device,
+    reduction: str = "sum",
 ) -> torch.Tensor:
     losses = [
         distance_fn(cs, ct)
         for cs, ct in zip(source_centers, target_centers)
         if cs is not None and ct is not None
     ]
-    return torch.stack(losses).mean() if losses else torch.zeros((), device=device)
+    return _reduce_losses(losses, reduction, device)
 
 
 def separating_loss(
@@ -94,6 +95,7 @@ def separating_loss(
     margin: float,
     distance_fn,
     device: torch.device,
+    reduction: str = "sum",
 ) -> torch.Tensor:
     losses: list[torch.Tensor] = []
     for i, ci in enumerate(mixed_centers):
@@ -103,7 +105,7 @@ def separating_loss(
             if i == j or cj is None:
                 continue
             losses.append(torch.relu(torch.as_tensor(float(margin), device=device) - distance_fn(ci, cj)))
-    return torch.stack(losses).mean() if losses else torch.zeros((), device=device)
+    return _reduce_losses(losses, reduction, device)
 
 
 def compacting_loss(
@@ -112,6 +114,7 @@ def compacting_loss(
     mixed_centers: list[torch.Tensor | None],
     distance_fn,
     device: torch.device,
+    reduction: str = "sum",
 ) -> torch.Tensor:
     losses: list[torch.Tensor] = []
     for cls, center in enumerate(mixed_centers):
@@ -119,8 +122,21 @@ def compacting_loss(
             continue
         mask = labels == cls
         if bool(mask.any()):
-            losses.append(distance_fn(features[mask], center.expand_as(features[mask])))
-    return torch.stack(losses).mean() if losses else torch.zeros((), device=device)
+            distances = distance_fn(features[mask], center.expand_as(features[mask]), mean=False)
+            losses.extend(distances.unbind())
+    return _reduce_losses(losses, reduction, device)
+
+
+def _reduce_losses(losses: list[torch.Tensor], reduction: str, device: torch.device) -> torch.Tensor:
+    if not losses:
+        return torch.zeros((), device=device)
+    values = torch.stack(losses)
+    reduction = str(reduction).lower()
+    if reduction == "sum":
+        return values.sum()
+    if reduction == "mean":
+        return values.mean()
+    raise ValueError(f"Unknown DAEAC loss reduction: {reduction}")
 
 
 def distance_from_name(name: str):

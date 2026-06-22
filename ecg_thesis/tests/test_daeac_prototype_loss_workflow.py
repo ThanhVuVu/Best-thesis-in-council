@@ -50,23 +50,35 @@ class PrototypeLossWorkflowTests(unittest.TestCase):
             self.assertEqual(config["adaptation"]["batchnorm_mode"], "freeze_all")
             self.assertEqual(config["adaptation"]["target_forward_mode"], "single")
             self.assertEqual(config["adaptation"]["epoch_driver"], "target_once")
-            self.assertEqual(config["adaptation"]["training_semantics_version"], 2)
-            self.assertLessEqual(float(config["adaptation"]["lr"]), 1.0e-4)
+            self.assertEqual(config["adaptation"]["training_semantics_version"], 3)
+            self.assertEqual(float(config["adaptation"]["lr"]), 0.005)
+            self.assertEqual(config["adaptation"]["cluster_loss_reduction"], "sum")
         self.assertEqual(len(outputs), len(VARIANT_FLAGS))
         self.assertEqual(len(prefixes), len(VARIANT_FLAGS))
 
-    def test_kaggle_notebook_is_clean_and_covers_every_variant(self) -> None:
+    def test_kaggle_notebook_is_clean_and_covers_every_domain_pair(self) -> None:
         path = ROOT / "notebooks/phase6_daeac_proto_loss_kaggle.ipynb"
         notebook = json.loads(path.read_text(encoding="utf-8"))
         code = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"] if cell["cell_type"] == "code")
-        for variant in VARIANT_FLAGS:
-            self.assertIn(repr(variant), code)
+        for pair in ("ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"):
+            self.assertIn(repr(pair), code)
+            self.assertTrue((ROOT / f"configs/phase6_daeac_pair_{pair}.yaml").exists())
         self.assertIn("/kaggle/working", code)
         self.assertIn("RUN_FULL = False", code)
+        self.assertIn("DOMAIN_PAIR = 'ds1_ds2'", code)
         for cell in notebook["cells"]:
             if cell["cell_type"] == "code":
                 self.assertIsNone(cell.get("execution_count"))
                 self.assertEqual(cell.get("outputs"), [])
+
+    def test_domain_pair_configs_use_original_daeac_losses(self) -> None:
+        for pair in ("ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"):
+            config = self.common.load_phase1_config(str(ROOT / f"configs/phase6_daeac_pair_{pair}.yaml"))
+            self.assertEqual(config["prototype_bank"]["usage"], "logging_only")
+            self.assertEqual(config["prototype_losses"]["mode"], "legacy")
+            self.assertFalse(config["prototype_losses"]["enabled"])
+            self.assertEqual(config["pseudo_filter"]["max_normalized_entropy"], 1.0)
+            self.assertEqual(config["adaptation"]["lr"], 0.005)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+extends: phase6_daeac_pair_base.yaml
+domain_pair: mitbih_incart
+paths: {output_dir: outputs/phase6_daeac_pair_mitbih_incart}
+data:
+  source_train: data/processed/phase6_daeac_paper/mitdb_all_daeac.npz
+  source_eval: data/processed/phase6_daeac_paper/mitdb_all_daeac.npz
+  target_unlabeled: data/processed/phase6_daeac_paper/incart_first5_unlabeled_daeac.npz
+  target_test: data/processed/phase6_daeac_paper/incart_after5_daeac.npz
+  target_full_transductive: data/processed/phase6_daeac_paper/incart_all_daeac.npz
+training: {checkpoint_prefix: daeac_base_mitbih_all}
+adaptation:
+  checkpoint_prefix: daeac_mitbih_incart
+  init_checkpoint: outputs/phase6_daeac_pair_mitbih_incart/checkpoints/daeac_base_mitbih_all_best.pt

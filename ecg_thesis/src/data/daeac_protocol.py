@@ -44,6 +44,35 @@ def create_daeac_after_time_split(
     return inspect_daeac_time_split(output, threshold_sec)
 
 
+def create_daeac_before_time_split(
+    source_path: str | Path,
+    output_path: str | Path,
+    threshold_sec: float = 300.0,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Create the unlabeled adaptation partition with time strictly below the boundary."""
+    source = Path(source_path)
+    output = Path(output_path)
+    if output.exists() and not force:
+        return inspect_daeac_time_split(output, threshold_sec)
+    if not source.exists():
+        raise FileNotFoundError(f"DAEAC full target file not found: {source}")
+    with np.load(source, allow_pickle=True) as data:
+        time_key = _first_present(data, SAMPLE_TIME_KEYS)
+        times = np.asarray(data[time_key], dtype=np.float64)
+        sample_count = _sample_count(data)
+        mask = times < float(threshold_sec)
+        if not bool(mask.any()):
+            raise ValueError(f"{source}: no samples before {threshold_sec} seconds.")
+        arrays = {
+            key: np.asarray(data[key])[mask] if _is_sample_array(key, data[key], sample_count) else np.asarray(data[key])
+            for key in data.files
+        }
+    ensure_dir(output.parent)
+    np.savez_compressed(output, **arrays)
+    return inspect_daeac_time_split(output, threshold_sec)
+
+
 def inspect_daeac_time_split(path: str | Path, threshold_sec: float = 300.0) -> dict[str, Any]:
     split_path = Path(path)
     with np.load(split_path, allow_pickle=True) as data:

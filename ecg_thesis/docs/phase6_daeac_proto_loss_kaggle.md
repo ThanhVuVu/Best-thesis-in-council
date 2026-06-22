@@ -1,5 +1,11 @@
 # Phase 6 PLAN 3 — Prototype Loss Replacement on Kaggle
 
+> The accompanying notebook now defaults to the corrected paper-faithful
+> domain-pair workflow. Set `DOMAIN_PAIR` to one of `ds1_ds2`, `ds1_incart`,
+> `ds1_svdb`, `mitbih_incart`, or `mitbih_svdb`. The five pair configs use the
+> original EMA-center losses; the eight variants below remain a separate
+> ablation suite through their individual configs.
+
 ## Experiment contract
 
 This workflow replaces the legacy mixed-center losses while keeping the Plan 1

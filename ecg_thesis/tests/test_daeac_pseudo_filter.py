@@ -39,14 +39,15 @@ class DAEACPseudoFilterTest(unittest.TestCase):
         self.assertAlmostEqual(float(values[0]), 0.0, places=6)
         self.assertAlmostEqual(float(values[1]), 1.0, places=6)
 
-    def test_all_four_modes_and_inclusive_boundaries(self) -> None:
+    def test_all_four_modes_and_strict_confidence_boundaries(self) -> None:
         probabilities = [[0.99, 0.01, 0.0, 0.0], [0.998, 0.002, 0.0, 0.0], [0.1, 0.9, 0.0, 0.0]]
         self.assertEqual(self._filter(probabilities, "none").accepted_mask.tolist(), [True, True, True])
-        self.assertEqual(self._filter(probabilities, "confidence_global").accepted_mask.tolist(), [True, True, False])
+        self.assertEqual(self._filter(probabilities, "confidence_global").accepted_mask.tolist(), [False, True, False])
         class_specific = self._filter(probabilities, "class_specific", entropy_threshold=1.0)
         self.assertEqual(class_specific.accepted_mask.tolist(), [False, False, False])
-        entropy_boundary = float(normalized_entropy(torch.tensor([probabilities[0]])).item())
-        accepted = self._filter([probabilities[0]], "confidence_entropy", entropy_threshold=entropy_boundary)
+        entropy_sample = [0.991, 0.009, 0.0, 0.0]
+        entropy_boundary = float(normalized_entropy(torch.tensor([entropy_sample])).item())
+        accepted = self._filter([entropy_sample], "confidence_entropy", entropy_threshold=entropy_boundary)
         self.assertTrue(bool(accepted.accepted_mask[0]))
 
     def test_rejection_reasons_are_disjoint(self) -> None:

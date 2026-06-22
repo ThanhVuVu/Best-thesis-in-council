@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+from src.data.daeac_dataset import DAEACPseudoLabeledDataset
 from src.models.daeac_paper import ClassifierH
 from src.training.daeac_losses import (
     compacting_loss,
@@ -46,7 +47,7 @@ from src.training.train_daeac_paper import (
     _threshold_tensor,
     build_daeac_model,
     compute_global_source_centers,
-    compute_global_target_centers,
+    compute_global_pseudo_target_centers,
     evaluate_daeac_model,
     load_daeac_checkpoint,
 )
@@ -79,8 +80,8 @@ def validate_prototype_bank_config(config: dict[str, Any]) -> str:
 def _validate_adaptation_execution_config(config: dict[str, Any]) -> None:
     cfg = dict(config.get("adaptation", {}))
     batchnorm_mode = str(cfg.get("batchnorm_mode", "train")).lower()
-    target_forward_mode = str(cfg.get("target_forward_mode", "double")).lower()
-    epoch_driver = str(cfg.get("epoch_driver", "source")).lower()
+    target_forward_mode = str(cfg.get("target_forward_mode", "single")).lower()
+    epoch_driver = str(cfg.get("epoch_driver", "target_once")).lower()
     if batchnorm_mode not in VALID_BATCHNORM_MODES:
         raise ValueError(f"adaptation.batchnorm_mode must be one of {sorted(VALID_BATCHNORM_MODES)}.")
     if target_forward_mode not in VALID_TARGET_FORWARD_MODES:
@@ -93,7 +94,7 @@ def _validate_adaptation_execution_config(config: dict[str, Any]) -> None:
 
 def _validate_resume_execution_compatibility(checkpoint: dict[str, Any], current_cfg: dict[str, Any]) -> None:
     saved_cfg = dict(checkpoint.get("config", {}).get("adaptation", {}))
-    expected_version = int(current_cfg.get("training_semantics_version", 1))
+    expected_version = int(current_cfg.get("training_semantics_version", 3))
     saved_version = int(saved_cfg.get("training_semantics_version", 1))
     if saved_version != expected_version:
         raise ValueError(
@@ -133,6 +134,7 @@ def train_daeac_prototype_bank(
 ) -> dict[str, Any]:
     usage = validate_prototype_bank_config(config)
     cfg = config["adaptation"]
+    cfg.setdefault("training_semantics_version", 3)
     bank_cfg = config["prototype_bank"]
     class_names = list(config["data"]["class_names"])
     num_classes = int(config["data"]["num_classes"])
@@ -147,12 +149,12 @@ def train_daeac_prototype_bank(
         raise ValueError("adaptation.init_checkpoint is required; this workflow never trains a base model silently.")
     load_daeac_checkpoint(init_checkpoint, config, device, model=model)
     batchnorm_mode = str(cfg.get("batchnorm_mode", "train")).lower()
-    target_forward_mode = str(cfg.get("target_forward_mode", "double")).lower()
-    epoch_driver = str(cfg.get("epoch_driver", "source")).lower()
+    target_forward_mode = str(cfg.get("target_forward_mode", "single")).lower()
+    epoch_driver = str(cfg.get("epoch_driver", "target_once")).lower()
     configure_adaptation_batchnorm(model, batchnorm_mode)
     source_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=True, num_workers=0)
     source_init_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
-    target_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=True, num_workers=0)
+    target_inference_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
@@ -172,6 +174,24 @@ def train_daeac_prototype_bank(
         margin_matrix = build_margin_matrix(prototype_loss_cfg, class_names, device, torch.float32)
     filter_enabled = bool(filter_cfg.get("enabled", False))
     filter_thresholds = class_threshold_tensor(filter_cfg, class_names, device) if filter_enabled else thresholds
+    aux_classifier = ClassifierH(
+        feature_dim=int(config["model"]["feature_dim"]),
+        num_classes=num_classes,
+        dropout=float(config["model"].get("dropout", 0.0)),
+    ).to(device)
+    aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
+    aux_classifier.eval()
+    pseudo_dataset, pseudo_diagnostics = build_filtered_pseudo_snapshot(
+        model=model,
+        aux_classifier=aux_classifier,
+        target_dataset=target_dataset,
+        inference_loader=target_inference_loader,
+        thresholds=thresholds,
+        filter_cfg=filter_cfg,
+        filter_thresholds=filter_thresholds,
+        device=device,
+        num_classes=num_classes,
+    )
     bank = build_prototype_bank(config, device)
     cpu_rng_state = torch.random.get_rng_state() if usage == "logging_only" else None
     cuda_rng_state = torch.cuda.get_rng_state_all() if usage == "logging_only" and torch.cuda.is_available() else None
@@ -188,14 +208,14 @@ def train_daeac_prototype_bank(
         # Preserve the accepted baseline's shuffled initialization passes so
         # the control consumes RNG in exactly the same order before epoch 0.
         legacy_memory.source = compute_global_source_centers(model, source_loader, device, num_classes)
-        legacy_memory.target = compute_global_target_centers(model, target_loader, device, num_classes, thresholds)
+        legacy_memory.target = compute_global_pseudo_target_centers(
+            model,
+            DataLoader(pseudo_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False),
+            device,
+            num_classes,
+        )
         legacy_memory.refresh_mixed()
 
-    aux_classifier = ClassifierH(
-        feature_dim=int(config["model"]["feature_dim"]),
-        num_classes=num_classes,
-        dropout=0.0,
-    ).to(device)
     start_epoch = 0
     best_macro_f1 = -1.0
     best_epoch = -1
@@ -230,6 +250,19 @@ def train_daeac_prototype_bank(
             if legacy_state is None:
                 raise KeyError("logging_only resume checkpoint is missing legacy_center_state.")
             _restore_legacy_memory(legacy_memory, legacy_state, device)
+        aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
+        aux_classifier.eval()
+        pseudo_dataset, pseudo_diagnostics = build_filtered_pseudo_snapshot(
+            model=model,
+            aux_classifier=aux_classifier,
+            target_dataset=target_dataset,
+            inference_loader=target_inference_loader,
+            thresholds=thresholds,
+            filter_cfg=filter_cfg,
+            filter_thresholds=filter_thresholds,
+            device=device,
+            num_classes=num_classes,
+        )
 
     latest_path = ckpt_dir / f"{prefix}_latest.pt"
     best_path = ckpt_dir / f"{prefix}_best.pt"
@@ -271,8 +304,12 @@ def train_daeac_prototype_bank(
         print(f"[{prefix} init] val_macro_f1={init_val_macro_f1:.4f} selected_as_initial_best")
     for epoch in range(start_epoch, int(cfg["epochs"])):
         set_adaptation_train_mode(model, batchnorm_mode)
-        aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
-        aux_classifier.eval()
+        target_loader = DataLoader(
+            pseudo_dataset,
+            batch_size=int(cfg["target_batch_size"]),
+            shuffle=True,
+            num_workers=0,
+        )
         batch_rows: list[dict[str, float]] = []
         predicted_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
         accepted_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
@@ -308,51 +345,17 @@ def train_daeac_prototype_bank(
             epoch_driver=epoch_driver,
         ):
             x_s, y_s = source_batch
-            x_t = target_batch[0] if isinstance(target_batch, (tuple, list)) else target_batch
+            x_t, selected_pseudo_t, selected_confidence_t, selected_entropy_t = target_batch
             x_s, y_s, x_t = x_s.to(device), y_s.to(device), x_t.to(device)
+            selected_pseudo_t = selected_pseudo_t.to(device)
+            selected_confidence_t = selected_confidence_t.to(device)
+            selected_entropy_t = selected_entropy_t.to(device)
             source_samples_seen += int(y_s.numel())
             target_samples_seen += int(x_t.shape[0])
             z_s, logits_s, _ = model(x_s, return_logits=True)
             loss_cls = weighted_cross_entropy_from_logits(logits_s, y_s, class_weights)
-            z_t_all, probabilities_t = forward_target_for_pseudolabels(
-                model,
-                aux_classifier,
-                x_t,
-                mode=target_forward_mode,
-            )
-            with torch.no_grad():
-                if filter_enabled:
-                    filtered = filter_target_pseudolabels(
-                        probabilities_t,
-                        mode=str(filter_cfg["mode"]),
-                        global_confidence_threshold=float(filter_cfg["global_confidence_threshold"]),
-                        class_confidence_thresholds=filter_thresholds,
-                        max_normalized_entropy=float(filter_cfg["max_normalized_entropy"]),
-                    )
-                    confidence_t = filtered.confidence
-                    pseudo_t = filtered.pseudo_labels
-                    entropy_t = filtered.normalized_entropy
-                    confident = filtered.accepted_mask
-                    reject_confidence = filtered.rejected_confidence_mask
-                    reject_entropy = filtered.rejected_entropy_mask
-                    reject_both = filtered.rejected_both_mask
-                else:
-                    confidence_t, pseudo_t = probabilities_t.max(dim=1)
-                    entropy_t = -(probabilities_t * probabilities_t.clamp_min(torch.finfo(probabilities_t.dtype).tiny).log()).sum(dim=1)
-                    entropy_t = entropy_t / np.log(num_classes)
-                    confident = confidence_t >= thresholds[pseudo_t]
-                    reject_confidence = ~confident
-                    reject_entropy = torch.zeros_like(confident)
-                    reject_both = torch.zeros_like(confident)
-            if bool(confident.any()):
-                selected_x_t = x_t[confident]
-                selected_pseudo_t = pseudo_t[confident]
-                selected_weights_t = target_reliability_weights(confidence_t[confident], entropy_t[confident])
-                z_t = z_t_all[confident] if target_forward_mode == "single" else model.extract_features(selected_x_t)
-            else:
-                selected_pseudo_t = torch.empty(0, dtype=torch.long, device=device)
-                selected_weights_t = torch.empty(0, device=device)
-                z_t = torch.empty(0, bank.feature_dim, device=device)
+            z_t = model.extract_features(x_t)
+            selected_weights_t = target_reliability_weights(selected_confidence_t, selected_entropy_t)
 
             source_local, source_counts = dense_batch_prototypes(z_s, y_s, num_classes)
             target_local, target_counts = dense_batch_prototypes(z_t, selected_pseudo_t, num_classes)
@@ -402,8 +405,9 @@ def train_daeac_prototype_bank(
                     y_mix = torch.cat([y_s, selected_pseudo_t], dim=0)
                 else:
                     z_mix, y_mix = z_s, y_s
-                loss_sep = separating_loss(global_for_loss, float(cfg["margin"]), distance_fn, device)
-                loss_comp = compacting_loss(z_mix, y_mix, global_for_loss, distance_fn, device)
+                reduction = str(cfg.get("cluster_loss_reduction", "sum"))
+                loss_sep = separating_loss(global_for_loss, float(cfg["margin"]), distance_fn, device, reduction=reduction)
+                loss_comp = compacting_loss(z_mix, y_mix, global_for_loss, distance_fn, device, reduction=reduction)
                 loss_total = loss_cls + float(cfg["beta1"]) * loss_align + float(cfg["beta2"]) * (loss_sep + loss_comp)
                 replacement = _empty_replacement_metrics(z_s)
                 weighted_align = float(cfg["beta1"]) * loss_align
@@ -418,6 +422,13 @@ def train_daeac_prototype_bank(
             if legacy_memory is not None:
                 legacy_memory.commit(source_for_loss, target_for_loss, global_for_loss)
 
+            pseudo_t = selected_pseudo_t
+            confidence_t = selected_confidence_t
+            entropy_t = selected_entropy_t
+            confident = torch.ones_like(selected_pseudo_t, dtype=torch.bool)
+            reject_confidence = torch.zeros_like(confident)
+            reject_entropy = torch.zeros_like(confident)
+            reject_both = torch.zeros_like(confident)
             predicted_counts += torch.bincount(pseudo_t, minlength=num_classes)
             accepted_counts += torch.bincount(selected_pseudo_t, minlength=num_classes)
             predicted_confidence_sums.scatter_add_(0, pseudo_t, confidence_t)
@@ -454,10 +465,22 @@ def train_daeac_prototype_bank(
                     "source_margin_violation_ratio": float(replacement["source_margin_violation_ratio"].detach().cpu()),
                     "target_margin_violation_ratio": float(replacement["target_margin_violation_ratio"].detach().cpu()),
                     "target_weight_mean": float(selected_weights_t.mean().detach().cpu()) if selected_weights_t.numel() else 0.0,
-                    "pseudo_selected": float(confident.sum().detach().cpu()),
+                    "pseudo_selected": float(len(selected_pseudo_t)),
                 }
             )
 
+        # Diagnostics describe the complete frozen snapshot inference pass,
+        # including rejected samples, rather than only accepted training rows.
+        predicted_counts = pseudo_diagnostics["predicted_counts"].to(device)
+        accepted_counts = pseudo_diagnostics["accepted_counts"].to(device)
+        predicted_confidence_sums = pseudo_diagnostics["predicted_confidence_sums"].to(device)
+        predicted_entropy_sums = pseudo_diagnostics["predicted_entropy_sums"].to(device)
+        accepted_confidence_sums = pseudo_diagnostics["accepted_confidence_sums"].to(device)
+        accepted_entropy_sums = pseudo_diagnostics["accepted_entropy_sums"].to(device)
+        accepted_weight_sums = pseudo_diagnostics["accepted_weight_sums"].to(device)
+        rejected_confidence_counts = pseudo_diagnostics["rejected_confidence_counts"].to(device)
+        rejected_entropy_counts = pseudo_diagnostics["rejected_entropy_counts"].to(device)
+        rejected_both_counts = pseudo_diagnostics["rejected_both_counts"].to(device)
         reliability = bank.update_reliability(
             predicted_counts,
             accepted_counts,
@@ -621,6 +644,19 @@ def train_daeac_prototype_bank(
             )
             run.finish()
             raise RuntimeError(f"Pseudo-label safety stop: {safety_reason} for {patience} consecutive epochs.")
+        aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
+        aux_classifier.eval()
+        pseudo_dataset, pseudo_diagnostics = build_filtered_pseudo_snapshot(
+            model=model,
+            aux_classifier=aux_classifier,
+            target_dataset=target_dataset,
+            inference_loader=target_inference_loader,
+            thresholds=thresholds,
+            filter_cfg=filter_cfg,
+            filter_thresholds=filter_thresholds,
+            device=device,
+            num_classes=num_classes,
+        )
 
     summary = {
         "usage": usage,
@@ -1017,6 +1053,109 @@ def paired_adaptation_batches(source_loader, target_loader, *, epoch_driver: str
             yield next(source_iter), target_batch
         return
     raise ValueError(f"Unknown adaptation epoch driver: {epoch_driver}")
+
+
+def build_filtered_pseudo_snapshot(
+    *,
+    model,
+    aux_classifier,
+    target_dataset: Dataset,
+    inference_loader: DataLoader,
+    thresholds: torch.Tensor,
+    filter_cfg: dict[str, Any],
+    filter_thresholds: torch.Tensor,
+    device: torch.device,
+    num_classes: int,
+) -> tuple[DAEACPseudoLabeledDataset, dict[str, torch.Tensor]]:
+    """Run F+h over the complete target set and freeze accepted labels for one epoch."""
+    keys = (
+        "predicted_counts",
+        "accepted_counts",
+        "predicted_confidence_sums",
+        "predicted_entropy_sums",
+        "accepted_confidence_sums",
+        "accepted_entropy_sums",
+        "accepted_weight_sums",
+        "rejected_confidence_counts",
+        "rejected_entropy_counts",
+        "rejected_both_counts",
+    )
+    diagnostics = {key: torch.zeros(num_classes, dtype=torch.float32) for key in keys}
+    positions: list[torch.Tensor] = []
+    labels: list[torch.Tensor] = []
+    confidences: list[torch.Tensor] = []
+    entropies: list[torch.Tensor] = []
+    offset = 0
+    model.eval()
+    aux_classifier.eval()
+    filter_enabled = bool(filter_cfg.get("enabled", False))
+    with torch.no_grad():
+        for batch in inference_loader:
+            x = batch[0] if isinstance(batch, (tuple, list)) else batch
+            x = x.to(device)
+            features = model.extract_features(x)
+            _, probabilities = aux_classifier(features, return_logits=True)
+            if filter_enabled:
+                result = filter_target_pseudolabels(
+                    probabilities,
+                    mode=str(filter_cfg["mode"]),
+                    global_confidence_threshold=float(filter_cfg["global_confidence_threshold"]),
+                    class_confidence_thresholds=filter_thresholds,
+                    max_normalized_entropy=float(filter_cfg["max_normalized_entropy"]),
+                )
+                pseudo = result.pseudo_labels
+                confidence = result.confidence
+                entropy = result.normalized_entropy
+                accepted = result.accepted_mask
+                rejected_confidence = result.rejected_confidence_mask
+                rejected_entropy = result.rejected_entropy_mask
+                rejected_both = result.rejected_both_mask
+            else:
+                confidence, pseudo = probabilities.max(dim=1)
+                entropy = -(probabilities * probabilities.clamp_min(torch.finfo(probabilities.dtype).tiny).log()).sum(dim=1)
+                entropy = entropy / np.log(num_classes)
+                accepted = confidence > thresholds[pseudo]
+                rejected_confidence = ~accepted
+                rejected_entropy = torch.zeros_like(accepted)
+                rejected_both = torch.zeros_like(accepted)
+
+            accepted_labels = pseudo[accepted]
+            accepted_confidence = confidence[accepted]
+            accepted_entropy = entropy[accepted]
+            accepted_weights = target_reliability_weights(accepted_confidence, accepted_entropy)
+            local_positions = torch.arange(offset, offset + len(x), device=device)
+            positions.append(local_positions[accepted].cpu())
+            labels.append(accepted_labels.cpu())
+            confidences.append(accepted_confidence.cpu())
+            entropies.append(accepted_entropy.cpu())
+            offset += len(x)
+
+            diagnostics["predicted_counts"] += torch.bincount(pseudo.cpu(), minlength=num_classes).float()
+            diagnostics["accepted_counts"] += torch.bincount(accepted_labels.cpu(), minlength=num_classes).float()
+            diagnostics["predicted_confidence_sums"].scatter_add_(0, pseudo.cpu(), confidence.cpu())
+            diagnostics["predicted_entropy_sums"].scatter_add_(0, pseudo.cpu(), entropy.cpu())
+            if bool(accepted.any()):
+                diagnostics["accepted_confidence_sums"].scatter_add_(0, accepted_labels.cpu(), accepted_confidence.cpu())
+                diagnostics["accepted_entropy_sums"].scatter_add_(0, accepted_labels.cpu(), accepted_entropy.cpu())
+                diagnostics["accepted_weight_sums"].scatter_add_(0, accepted_labels.cpu(), accepted_weights.cpu())
+            for key, mask in (
+                ("rejected_confidence_counts", rejected_confidence),
+                ("rejected_entropy_counts", rejected_entropy),
+                ("rejected_both_counts", rejected_both),
+            ):
+                if bool(mask.any()):
+                    diagnostics[key] += torch.bincount(pseudo[mask].cpu(), minlength=num_classes).float()
+
+    if not labels or sum(len(value) for value in labels) == 0:
+        raise RuntimeError("No target samples were accepted while building the epoch pseudo-label snapshot.")
+    dataset = DAEACPseudoLabeledDataset(
+        target_dataset,
+        torch.cat(positions),
+        torch.cat(labels),
+        torch.cat(confidences),
+        torch.cat(entropies),
+    )
+    return dataset, diagnostics
 
 
 def forward_target_for_pseudolabels(model, aux_classifier, inputs, *, mode: str):
