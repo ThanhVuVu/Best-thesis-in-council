@@ -52,6 +52,9 @@ class DAEACDANNModel(nn.Module):
 
     def forward_domain(self, x: torch.Tensor, lambd: float) -> torch.Tensor:
         features = self.extract_features(x)
+        return self.forward_domain_from_features(features, lambd)
+
+    def forward_domain_from_features(self, features: torch.Tensor, lambd: float) -> torch.Tensor:
         return self.domain_classifier(self.grl(features, lambd))
 
 

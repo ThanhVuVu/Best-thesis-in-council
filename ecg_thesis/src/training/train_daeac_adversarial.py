@@ -94,8 +94,11 @@ def train_daeac_dann(
             ).to(device)
 
             optimizer.zero_grad(set_to_none=True)
-            logits_s = model(x_s)
-            domain_logits = model.forward_domain(x_domain, lambd=lambd)
+            # One mixed-domain encoder pass keeps shared BatchNorm statistics
+            # symmetric and avoids updating them twice with source samples.
+            features_domain = model.extract_features(x_domain)
+            logits_s = model.class_logits(features_domain[: x_s.shape[0]])
+            domain_logits = model.forward_domain_from_features(features_domain, lambd=lambd)
             loss_cls = cls_loss_fn(logits_s, y_s)
             loss_domain = domain_loss_fn(domain_logits, y_domain)
             loss = loss_cls + alpha * loss_domain
@@ -222,12 +225,15 @@ def train_daeac_cdan(
             x_t = _target_batch(next(target_iter), device)
 
             optimizer.zero_grad(set_to_none=True)
-            f_s = model.extract_features(x_s)
+            # Source and target share one encoder and therefore one mixed BN
+            # update per iteration; sequential passes would bias running stats
+            # toward whichever domain is forwarded last.
+            features_all = model.extract_features(torch.cat([x_s, x_t], dim=0))
+            f_s = features_all[: x_s.shape[0]]
+            f_t = features_all[x_s.shape[0] :]
             logits_s = model.class_logits(f_s)
-            f_t = model.extract_features(x_t)
             logits_t = model.class_logits(f_t)
             loss_cls = cls_loss_fn(logits_s, y_s)
-            features_all = torch.cat([f_s, f_t], dim=0)
             logits_all = torch.cat([logits_s, logits_t], dim=0)
             domain_logits = model.forward_domain_from_features(
                 features_all,
