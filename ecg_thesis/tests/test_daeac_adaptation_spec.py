@@ -22,7 +22,7 @@ class _IdentityFeatureModel(nn.Module):
 
 
 class DAEACAdaptationSpecificationTests(unittest.TestCase):
-    def test_complete_source_is_used_for_fit_when_paths_match(self) -> None:
+    def test_source_fit_and_validation_are_record_disjoint_when_paths_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ds1.npz"
             np.savez_compressed(
@@ -32,12 +32,13 @@ class DAEACAdaptationSpecificationTests(unittest.TestCase):
                 record=np.asarray(["101", "220", "223", "230"]),
                 class_names=np.asarray(["N", "S", "V", "F"], dtype=object),
             )
-            source, monitor, summary = load_daeac_source_fit_val(path, path)
-            self.assertEqual(len(source), 4)
+            source, monitor, summary = load_daeac_source_fit_val(path, path, full_source_fit=False)
+            self.assertEqual(len(source), 1)
             self.assertEqual(len(monitor), 3)
-            self.assertTrue(summary["source_monitor_overlaps_fit"])
-            self.assertEqual(summary["mode"], "full_source_fit_with_overlapping_monitor_subset")
-            source.close()
+            self.assertFalse(summary["source_monitor_overlaps_fit"])
+            self.assertEqual(summary["record_overlap"], [])
+            self.assertEqual(summary["mode"], "disjoint_record_fit_validation")
+            source.dataset.close()
 
     def test_pseudo_snapshot_visits_all_target_and_is_immutable(self) -> None:
         target = TensorDataset(torch.tensor([[3.0, 0.0], [0.0, 3.0], [2.0, 0.0]]))

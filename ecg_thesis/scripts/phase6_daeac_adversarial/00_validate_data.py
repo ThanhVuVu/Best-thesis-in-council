@@ -6,15 +6,18 @@ from pathlib import Path
 from common import cfg_path, load_phase1_config
 from src.data.daeac_dataset import DAEACDataset, inspect_daeac_npz, split_daeac_source_fit_val
 from src.utils.io import ensure_dir, write_json
+from workflow import apply_domain_pair
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/phase6_daeac_dann.yaml")
     parser.add_argument("--require-external", action="store_true")
+    parser.add_argument("--domain-pair", choices=["ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"], default=None)
     args = parser.parse_args()
 
     config = load_phase1_config(args.config)
+    apply_domain_pair(config, args.domain_pair, "dann")
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))

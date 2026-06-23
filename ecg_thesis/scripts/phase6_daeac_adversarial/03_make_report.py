@@ -5,15 +5,19 @@ from pathlib import Path
 
 from common import cfg_path, load_phase1_config
 from src.utils.io import ensure_dir, read_json
+from workflow import apply_domain_pair
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/phase6_daeac_dann.yaml")
     parser.add_argument("--method-name", default=None)
+    parser.add_argument("--domain-pair", choices=["ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"], default=None)
     args = parser.parse_args()
 
     config = load_phase1_config(args.config)
+    method_hint = "adda" if "adda" in str(args.method_name) else "cdan" if "cdan" in str(args.method_name) else "dann"
+    apply_domain_pair(config, args.domain_pair, method_hint)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
     prefix = str(args.method_name or config["training"]["checkpoint_prefix"])
     lines = [

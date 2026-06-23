@@ -12,7 +12,7 @@ def main() -> None:
     config, source_ds, val_ds, target_ds, output, device = prepare_train_run(args, "cdan")
     if args.method is not None:
         config["cdan"]["method"] = str(args.method)
-        if args.checkpoint_prefix is None:
+        if args.checkpoint_prefix is None and args.domain_pair is None:
             config["training"]["checkpoint_prefix"] = "daeac_cdan" if args.method == "cdan" else "daeac_cdan_e"
     summary = train_daeac_cdan(source_ds, val_ds, target_ds, config, output, device)
     prefix = config["training"]["checkpoint_prefix"]

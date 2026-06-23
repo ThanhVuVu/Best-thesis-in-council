@@ -136,23 +136,34 @@ def load_daeac_source_fit_val(
     label_key: str = "y",
     class_names: list[str] | None = None,
     split_same_path: bool = True,
+    full_source_fit: bool = True,
 ) -> tuple[Dataset, Dataset, dict[str, Any]]:
     source_ds = DAEACDataset(source_path, input_key=input_key, label_key=label_key, class_names=class_names)
     same_path = Path(source_path).resolve() == Path(eval_path).resolve()
     if same_path and split_same_path:
-        _, val_ds, split_summary = split_daeac_source_fit_val(source_ds)
-        all_records = sorted(set(np.asarray(source_ds.records).astype(str))) if source_ds.records is not None else []
+        fit_ds, val_ds, split_summary = split_daeac_source_fit_val(source_ds)
+        if full_source_fit:
+            all_records = sorted(set(np.asarray(source_ds.records).astype(str))) if source_ds.records is not None else []
+            summary = {
+                **split_summary,
+                "mode": "full_source_fit_with_overlapping_monitor_subset",
+                "fit_records": all_records,
+                "fit_samples": len(source_ds),
+                "source_monitor_overlaps_fit": True,
+                "source_path": str(source_path),
+                "eval_path": str(eval_path),
+                "split_applied": True,
+            }
+            return source_ds, val_ds, summary
         summary = {
             **split_summary,
-            "mode": "full_source_fit_with_overlapping_monitor_subset",
-            "fit_records": all_records,
-            "fit_samples": len(source_ds),
-            "source_monitor_overlaps_fit": True,
+            "mode": "disjoint_record_fit_validation",
+            "source_monitor_overlaps_fit": False,
             "source_path": str(source_path),
             "eval_path": str(eval_path),
             "split_applied": True,
         }
-        return source_ds, val_ds, summary
+        return fit_ds, val_ds, summary
 
     val_ds = DAEACDataset(eval_path, input_key=input_key, label_key=label_key, class_names=class_names)
     summary = {

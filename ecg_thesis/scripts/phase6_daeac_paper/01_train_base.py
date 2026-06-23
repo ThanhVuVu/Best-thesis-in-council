@@ -16,9 +16,15 @@ def main() -> None:
     parser.add_argument("--max-source-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--checkpoint-prefix", default=None)
+    parser.add_argument("--source-corpus", choices=["ds1", "mitbih"], default="ds1")
     add_wandb_args(parser)
     args = parser.parse_args()
     config = load_phase1_config(args.config)
+    if args.source_corpus == "mitbih":
+        config["data"]["source_train"] = "data/processed/phase6_daeac_paper/mitdb_all_daeac.npz"
+        config["data"]["source_eval"] = "data/processed/phase6_daeac_paper/mitdb_all_daeac.npz"
+        config["paths"]["output_dir"] = "outputs/phase6_daeac_mitbih_base"
+        config["training"]["checkpoint_prefix"] = "daeac_base_mitbih"
     apply_wandb_overrides(config, args)
     if args.epochs is not None:
         config["training"]["epochs"] = int(args.epochs)
@@ -35,6 +41,7 @@ def main() -> None:
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        full_source_fit=str(config["data"].get("source_usage", "full")).lower() == "full",
     )
     print(f"DAEAC source fit/validation split: {split_summary}")
     train_ds = subset_first(train_ds, args.max_source_samples)

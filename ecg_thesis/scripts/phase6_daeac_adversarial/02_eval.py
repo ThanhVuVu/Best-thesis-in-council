@@ -12,6 +12,7 @@ from src.data.daeac_dataset import DAEACDataset, subset_first
 from src.training.train_daeac_adversarial import evaluate_daeac_adversarial_model, load_daeac_adversarial_checkpoint
 from src.utils.io import ensure_dir, write_json
 from src.utils.wandb_logging import init_wandb, log_eval_metrics
+from workflow import apply_domain_pair
 
 
 def main() -> None:
@@ -20,11 +21,15 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--method-name", default="daeac_adversarial")
     parser.add_argument("--dataset", default="target", help="source, target, both, external, all, or an external key such as incart/svdb.")
+    parser.add_argument("--domain-pair", choices=["ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"], default=None)
     parser.add_argument("--max-samples", type=int, default=None)
     add_wandb_args(parser)
     args = parser.parse_args()
 
     config = load_phase1_config(args.config)
+    checkpoint_name = Path(args.checkpoint).name.lower()
+    method = "adda" if "adda" in checkpoint_name else "cdan" if "cdan" in checkpoint_name else "dann"
+    apply_domain_pair(config, args.domain_pair, method)
     apply_wandb_overrides(config, args)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
     device = device_from_torch()

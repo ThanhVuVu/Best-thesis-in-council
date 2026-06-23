@@ -14,7 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
 from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, subset_first
-from src.data.splits import mitbih_fit_val_records
+from src.data.splits import MITBIH_TEST_RECORDS, mitbih_fit_val_records
 from src.utils.io import ensure_dir
 from src.utils.seed import set_seed
 
@@ -25,6 +25,11 @@ def train_parser(default_config: str) -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--init-checkpoint", default=None)
     parser.add_argument("--checkpoint-prefix", default=None)
+    parser.add_argument(
+        "--domain-pair",
+        choices=["ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"],
+        default=None,
+    )
     parser.add_argument("--max-source-samples", type=int, default=None)
     parser.add_argument("--max-target-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
@@ -34,6 +39,9 @@ def train_parser(default_config: str) -> argparse.ArgumentParser:
 
 def prepare_train_run(args, method_section: str) -> tuple[dict[str, Any], Any, Any, Any, Any, Any]:
     config = load_phase1_config(args.config)
+    if method_section == "cdan" and getattr(args, "method", None) is not None:
+        config["cdan"]["method"] = str(args.method)
+    apply_domain_pair(config, args.domain_pair, method_section)
     apply_wandb_overrides(config, args)
     if args.epochs is not None:
         config["training"]["epochs"] = int(args.epochs)
@@ -69,6 +77,66 @@ def prepare_train_run(args, method_section: str) -> tuple[dict[str, Any], Any, A
     return config, source_ds, val_ds, target_ds, output, device
 
 
+def apply_domain_pair(config: dict[str, Any], domain_pair: str | None, method: str) -> dict[str, Any]:
+    """Apply one of the five paper domain protocols to an adversarial run."""
+    if domain_pair is None:
+        return config
+    pair = str(domain_pair).lower()
+    specs = {
+        "ds1_ds2": {
+            "source": "data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz",
+            "target_adapt": "data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz",
+            "target_test": "data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz",
+            "protocol": "first5_adapt_full_test",
+            "checkpoint": "outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt",
+        },
+        "ds1_incart": {
+            "source": "data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz",
+            "target_adapt": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
+            "target_test": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
+            "protocol": "full_target_transductive",
+            "checkpoint": "outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt",
+        },
+        "ds1_svdb": {
+            "source": "data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz",
+            "target_adapt": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
+            "target_test": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
+            "protocol": "full_target_transductive",
+            "checkpoint": "outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt",
+        },
+        "mitbih_incart": {
+            "source": "data/processed/phase6_daeac_paper/mitdb_all_daeac.npz",
+            "target_adapt": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
+            "target_test": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
+            "protocol": "full_target_transductive",
+            "checkpoint": "outputs/phase6_daeac_mitbih_base/checkpoints/daeac_base_mitbih_best.pt",
+        },
+        "mitbih_svdb": {
+            "source": "data/processed/phase6_daeac_paper/mitdb_all_daeac.npz",
+            "target_adapt": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
+            "target_test": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
+            "protocol": "full_target_transductive",
+            "checkpoint": "outputs/phase6_daeac_mitbih_base/checkpoints/daeac_base_mitbih_best.pt",
+        },
+    }
+    spec = specs[pair]
+    config["domain_pair"] = pair
+    config["data"].update(
+        {
+            "source_train": spec["source"],
+            "source_eval": spec["source"],
+            "target_unlabeled": spec["target_adapt"],
+            "target_test": spec["target_test"],
+            "target_protocol": spec["protocol"],
+        }
+    )
+    method_name = "cdan_e" if method == "cdan" and str(config.get("cdan", {}).get("method", "cdan_e")) == "cdan_e" else method
+    config["paths"]["output_dir"] = f"outputs/phase6_daeac_{method_name}_{pair}"
+    config["training"]["checkpoint_prefix"] = f"daeac_{method_name}_{pair}"
+    config["training"]["init_checkpoint"] = spec["checkpoint"]
+    return config
+
+
 def _same_path(left: Path, right: Path) -> bool:
     return Path(left).resolve() == Path(right).resolve()
 
@@ -83,6 +151,10 @@ def _split_source_fit_val(dataset: DAEACDataset, config: dict[str, Any]) -> tupl
     if mode != "mitbih_fit_val_records":
         raise ValueError(f"Unsupported Phase 6 adversarial source_split.mode: {mode!r}")
     fit_records, val_records = mitbih_fit_val_records()
+    # For an all-MITBIH source, reserve the four DS1 validation records and
+    # keep every DS2 record in source fit. This gives DS1+DS2 minus validation.
+    present_set = set(record_strings)
+    fit_records = [*fit_records, *[record for record in MITBIH_TEST_RECORDS if record in present_set]]
     fit_set = set(fit_records)
     val_set = set(val_records)
     fit_idx = [idx for idx, rec in enumerate(record_strings) if rec in fit_set]
