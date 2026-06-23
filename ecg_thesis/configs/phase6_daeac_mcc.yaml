@@ -27,6 +27,8 @@ data:
   label_key: y
   class_names: ["N", "S", "V", "F"]
   num_classes: 4
+  source_usage: disjoint_record_fit
+  target_protocol: first5_adapt_full_test
 
 model:
   num_classes: 4
@@ -58,9 +60,14 @@ adaptation:
   lr_decay_gamma: 0.99
   lr_decay_every_steps: 200
   use_class_weights: true
+  source_loss: weighted_cross_entropy
+  model_selection: final_epoch
+  epoch_driver: target_once
+  mixed_domain_batchnorm: true
   mcc:
     mu: 1.0
-    temperature: 2.5
+    # Plain target softmax from the thesis MCC specification.
+    temperature: 1.0
 
 evaluation:
   batch_size: 256

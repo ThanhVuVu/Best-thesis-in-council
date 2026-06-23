@@ -18,9 +18,15 @@ def main() -> None:
     parser.add_argument("--max-target-samples", type=int, default=None)
     parser.add_argument("--max-val-samples", type=int, default=None)
     parser.add_argument("--checkpoint-prefix", default=None)
+    parser.add_argument(
+        "--domain-pair",
+        choices=["ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"],
+        default=None,
+    )
     add_wandb_args(parser)
     args = parser.parse_args()
     config = load_phase1_config(args.config)
+    _apply_domain_pair(config, args.domain_pair)
     apply_wandb_overrides(config, args)
     if args.epochs is not None:
         config["adaptation"]["epochs"] = int(args.epochs)
@@ -40,6 +46,7 @@ def main() -> None:
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        full_source_fit=False,
     )
     print(f"DAEAC source fit/validation split: {split_summary}")
     target_ds = DAEACTargetUnlabeledDataset(
@@ -52,8 +59,33 @@ def main() -> None:
     val_ds = subset_first(val_ds, args.max_val_samples)
     target_ds = subset_first(target_ds, args.max_target_samples)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
-    summary = train_daeac_mcc(source_ds, val_ds, target_ds, config, output, device)
+    summary = train_daeac_mcc(source_ds, target_ds, config, output, device)
     write_json(summary, output / "metrics" / f"{config['adaptation']['checkpoint_prefix']}_train_summary.json")
+
+
+def _apply_domain_pair(config, domain_pair: str | None) -> None:
+    if domain_pair is None:
+        return
+    specs = {
+        "ds1_ds2": ("mitdb_ds1_daeac.npz", "mitdb_ds2_first5_unlabeled_daeac.npz", "mitdb_ds2_daeac.npz", "first5_adapt_full_test", "ds1"),
+        "ds1_incart": ("mitdb_ds1_daeac.npz", "incart_all_daeac.npz", "incart_all_daeac.npz", "full_target_transductive", "ds1"),
+        "ds1_svdb": ("mitdb_ds1_daeac.npz", "svdb_all_daeac.npz", "svdb_all_daeac.npz", "full_target_transductive", "ds1"),
+        "mitbih_incart": ("mitdb_all_daeac.npz", "incart_all_daeac.npz", "incart_all_daeac.npz", "full_target_transductive", "mitbih"),
+        "mitbih_svdb": ("mitdb_all_daeac.npz", "svdb_all_daeac.npz", "svdb_all_daeac.npz", "full_target_transductive", "mitbih"),
+    }
+    source, target_adapt, target_test, protocol, source_kind = specs[domain_pair]
+    root = "data/processed/phase6_daeac_paper"
+    config["domain_pair"] = domain_pair
+    config["data"].update(
+        source_train=f"{root}/{source}",
+        source_eval=f"{root}/{source}",
+        target_unlabeled=f"{root}/{target_adapt}",
+        target_test=f"{root}/{target_test}",
+        target_protocol=protocol,
+    )
+    config["paths"]["output_dir"] = f"outputs/phase6_daeac_mcc_{domain_pair}"
+    config["adaptation"]["checkpoint_prefix"] = f"daeac_mcc_{domain_pair}"
+    config["adaptation"]["source_kind"] = source_kind
 
 
 if __name__ == "__main__":

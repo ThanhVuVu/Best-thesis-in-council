@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 def minimum_class_confusion_loss(
     logits: torch.Tensor,
-    temperature: float = 2.5,
+    temperature: float = 1.0,
     eps: float = 1.0e-5,
     return_diagnostics: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, dict[str, Any]]:
