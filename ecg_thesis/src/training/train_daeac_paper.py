@@ -117,7 +117,6 @@ def train_daeac_base(
 
 def adapt_daeac(
     source_dataset: DAEACDataset,
-    val_dataset: DAEACDataset,
     target_dataset: DAEACTargetUnlabeledDataset,
     config: dict[str, Any],
     output_dir: str | Path,

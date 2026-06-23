@@ -79,6 +79,7 @@ def main() -> None:
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        full_source_fit=str(base_config["data"].get("source_usage", "full")).lower() == "full",
     )
     print(f"DAEAC source fit/validation split: {split_summary}")
     target_unlabeled_ds = DAEACTargetUnlabeledDataset(
@@ -113,11 +114,13 @@ def main() -> None:
         config["adaptation"]["checkpoint_prefix"] = trial_name
         config["adaptation"]["pseudo_thresholds"] = dict(thresholds)
 
-        trial_summary = adapt_daeac(source_ds, val_ds, target_unlabeled_ds, config, output, device)
+        trial_summary = adapt_daeac(source_ds, target_unlabeled_ds, config, output, device)
         write_json(trial_summary, search_dir / f"{trial_name}_train_summary.json")
 
         latest_metrics = _eval_checkpoint(trial_summary["latest_checkpoint"], config, target_loader, device, class_names)
-        best_metrics = _eval_checkpoint(trial_summary["best_checkpoint"], config, target_loader, device, class_names)
+        # Adaptation is final-epoch selected without labeled validation. Keep
+        # the legacy "best" columns as aliases of final/latest for CSV compatibility.
+        best_metrics = dict(latest_metrics)
         write_json(latest_metrics, latest_metrics_path)
         write_json(best_metrics, best_metrics_path)
 
@@ -185,11 +188,11 @@ def _result_row(
         "best_S_f1": float(best_per["S"]["f1"]),
         "best_V_f1": float(best_per["V"]["f1"]),
         "best_F_f1": float(best_per["F"]["f1"]),
-        "source_best_epoch": int(summary["best_epoch"]),
-        "source_best_val_macro_f1": float(summary["best_val_macro_f1"]),
+        "source_best_epoch": "",
+        "source_best_val_macro_f1": "",
         "final_pseudo_counts": final_history.get("pseudo_counts", []),
         "latest_checkpoint": summary["latest_checkpoint"],
-        "best_checkpoint": summary["best_checkpoint"],
+        "best_checkpoint": summary["latest_checkpoint"],
     }
 
 

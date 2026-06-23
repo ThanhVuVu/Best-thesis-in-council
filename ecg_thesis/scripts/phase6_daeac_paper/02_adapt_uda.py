@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 
 from common import add_wandb_args, apply_wandb_overrides, cfg_path, device_from_torch, load_phase1_config
-from src.data.daeac_dataset import DAEACTargetUnlabeledDataset, load_daeac_source_fit_val, subset_first
+from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, subset_first
 from src.training.train_daeac_paper import adapt_daeac
 from src.utils.io import ensure_dir, write_json
 from src.utils.seed import set_seed
@@ -33,15 +33,13 @@ def main() -> None:
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
-    source_ds, val_ds, split_summary = load_daeac_source_fit_val(
+    source_ds = DAEACDataset(
         cfg_path(config, "data", "source_train"),
-        cfg_path(config, "data", "source_eval"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
-        full_source_fit=str(config["adaptation"].get("source_usage", "full")).lower() == "full",
     )
-    print(f"DAEAC source fit/validation split: {split_summary}")
+    print(f"DAEAC adaptation source: full labeled corpus, samples={len(source_ds)} (no validation split)")
     target_ds = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),
         input_key=input_key,
@@ -49,10 +47,9 @@ def main() -> None:
         class_names=class_names,
     )
     source_ds = subset_first(source_ds, args.max_source_samples)
-    val_ds = subset_first(val_ds, args.max_val_samples)
     target_ds = subset_first(target_ds, args.max_target_samples)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
-    summary = adapt_daeac(source_ds, val_ds, target_ds, config, output, device)
+    summary = adapt_daeac(source_ds, target_ds, config, output, device)
     write_json(summary, output / "metrics" / "daeac_uda_train_summary.json")
 
 
