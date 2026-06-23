@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from common import cfg_path, load_phase1_config
-from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, split_daeac_source_fit_val
+from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, load_daeac_source_fit_val
 from src.utils.io import write_json
 
 
@@ -49,8 +49,12 @@ def _check_dataset_paths(config: dict[str, Any], report: dict[str, Any]) -> None
     target_unlabeled = cfg_path(config, "data", "target_unlabeled")
     target_test = cfg_path(config, "data", "target_test")
     if target_unlabeled == target_test:
-        raise ValueError("Leakage risk: data.target_unlabeled points to the same path as data.target_test.")
-    report["checks"].append("target_unlabeled_path_is_not_target_test_path")
+        protocol = str(config["data"].get("target_protocol", ""))
+        if protocol != "full_target_transductive":
+            raise ValueError("Leakage risk: identical adaptation/test paths require target_protocol=full_target_transductive.")
+        report["checks"].append("full_target_transductive_shared_input_path_declared")
+    else:
+        report["checks"].append("target_unlabeled_path_is_not_target_test_path")
     for key in ("source_train", "source_eval", "target_unlabeled", "target_test"):
         path = cfg_path(config, "data", key)
         if not path.exists():
@@ -64,16 +68,22 @@ def _check_dataset_paths(config: dict[str, Any], report: dict[str, Any]) -> None
 
 def _check_train_scripts_do_not_load_eval_data(config: dict[str, Any], report: dict[str, Any]) -> None:
     base = Path(config["_base_dir"])
-    forbidden = ("target_test", "external_targets")
+    dev_enabled = bool(config.get("adaptation", {}).get("dev", {}).get("enabled", False))
     for rel in TRAIN_SCRIPT_NAMES:
         path = base / rel
         if not path.exists():
             continue
         text = path.read_text(encoding="utf-8")
-        found = [term for term in forbidden if term in text]
-        if found:
-            raise ValueError(f"{rel} contains eval-only config keys in train script: {found}.")
-    report["checks"].append("train_scripts_do_not_reference_target_test_or_external_targets")
+        if "external_targets" in text:
+            raise ValueError(f"{rel} contains eval-only config key 'external_targets'.")
+        if "target_test" not in text:
+            continue
+        pure_mcc_dev_script = rel.endswith("/01_train.py") and dev_enabled
+        if not pure_mcc_dev_script:
+            raise ValueError(f"{rel} references target_test outside an enabled DEV workflow.")
+        if "dev_target_ds = DAEACTargetUnlabeledDataset(" not in text:
+            raise ValueError("DEV target_test must be loaded through DAEACTargetUnlabeledDataset.")
+    report["checks"].append("train_scripts_use_target_test_only_as_unlabeled_dev_input")
 
 
 def _inspect_all_npz(
@@ -129,8 +139,14 @@ def _check_source_fit_val_split(
         report["checks"].append("source_train_and_source_eval_are_distinct_paths")
         return
 
-    source = DAEACDataset(source_train, input_key=input_key, label_key=label_key, class_names=class_names)
-    _, _, split_summary = split_daeac_source_fit_val(source)
+    _, _, split_summary = load_daeac_source_fit_val(
+        source_train,
+        source_eval,
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+        full_source_fit=False,
+    )
     report["source_fit_val_split"] = {
         **split_summary,
         "source_path": str(source_train),
@@ -158,6 +174,18 @@ def _check_unlabeled_dataset_contract(
         raise ValueError("DAEACTargetUnlabeledDataset must return exactly (x, index), never labels.")
     report["target_unlabeled_file_has_label_key"] = bool(ds.y is not None)
     report["checks"].append("target_unlabeled_dataset_does_not_expose_labels")
+    if bool(config.get("adaptation", {}).get("dev", {}).get("enabled", False)):
+        dev_target = DAEACTargetUnlabeledDataset(
+            cfg_path(config, "data", "target_test"),
+            input_key=input_key,
+            label_key=label_key,
+            class_names=class_names,
+        )
+        dev_item = dev_target[0]
+        if not isinstance(dev_item, tuple) or len(dev_item) != 2:
+            raise ValueError("DEV target-test dataset must return exactly (x, index), never labels.")
+        report["dev_target_test_file_has_label_key"] = bool(dev_target.y is not None)
+        report["checks"].append("dev_target_test_dataset_does_not_expose_labels")
 
 
 def _check_target_overlap(
@@ -190,11 +218,15 @@ def _check_target_overlap(
     if overlap:
         message = (
             f"Found {len(overlap)} overlapping samples between target_unlabeled and target_test. "
-            "This is transductive input overlap and is disallowed in strict mode."
+            "This is transductive input overlap."
         )
-        if strict:
+        intentional = str(config["data"].get("target_protocol", "")) in {
+            "first5_adapt_full_test",
+            "full_target_transductive",
+        }
+        if strict and not intentional:
             raise ValueError(message)
-        report["warnings"].append(message)
+        report["warnings"].append(message + (" It is intentional for the configured paper protocol." if intentional else ""))
     report["checks"].append("target_unlabeled_target_test_overlap_checked")
 
 
