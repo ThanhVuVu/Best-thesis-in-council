@@ -55,11 +55,18 @@ def main() -> None:
         label_key=label_key,
         class_names=class_names,
     )
+    dev_target_ds = DAEACTargetUnlabeledDataset(
+        cfg_path(config, "data", "target_test"),
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+    )
     source_ds = subset_first(source_ds, args.max_source_samples)
     val_ds = subset_first(val_ds, args.max_val_samples)
     target_ds = subset_first(target_ds, args.max_target_samples)
+    dev_target_ds = subset_first(dev_target_ds, args.max_target_samples)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
-    summary = train_daeac_mcc(source_ds, target_ds, config, output, device)
+    summary = train_daeac_mcc(source_ds, val_ds, target_ds, dev_target_ds, config, output, device)
     write_json(summary, output / "metrics" / f"{config['adaptation']['checkpoint_prefix']}_train_summary.json")
 
 

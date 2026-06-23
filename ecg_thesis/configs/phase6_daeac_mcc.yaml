@@ -61,13 +61,24 @@ adaptation:
   lr_decay_every_steps: 200
   use_class_weights: true
   source_loss: weighted_cross_entropy
-  model_selection: final_epoch
+  model_selection: minimum_dev_risk
   epoch_driver: target_once
   mixed_domain_batchnorm: true
   mcc:
     mu: 1.0
     # Plain target softmax from the thesis MCC specification.
     temperature: 1.0
+  dev:
+    enabled: true
+    interval_epochs: 1
+    feature_batch_size: 1024
+    hidden_dim: 256
+    discriminator_epochs: 10
+    batch_size: 2048
+    lr: 0.001
+    weight_decay: 0.0
+    probability_eps: 0.000001
+    variance_eps: 0.000000000001
 
 evaluation:
   batch_size: 256
