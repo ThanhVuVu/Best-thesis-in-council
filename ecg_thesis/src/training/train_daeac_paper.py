@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import csv
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,7 @@ def build_daeac_model(config: dict[str, Any], device: torch.device) -> DAEACNetw
         dilations=tuple(int(v) for v in model_cfg.get("dilations", [1, 6, 12, 18])),
         se_reduction=int(model_cfg.get("se_reduction", 16)),
         dropout=float(model_cfg.get("dropout", 0.0)),
+        adaptation_fc=bool(dict(model_cfg.get("adaptation_fc", {})).get("enabled", False)),
     ).to(device)
 
 
@@ -131,7 +134,6 @@ def adapt_daeac(
 
     source_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=True, num_workers=0)
     target_inference_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
@@ -164,12 +166,26 @@ def adapt_daeac(
     wandb_run = init_wandb(config, job_type="adapt_daeac", default_name=prefix)
 
     latest_path = ckpt_dir / f"{prefix}_latest.pt"
-    best_path = ckpt_dir / f"{prefix}_best.pt"
-    best_macro_f1 = -1.0
-    best_epoch = -1
+    log_dir = ensure_dir(output_dir / "logs")
+    history_csv = log_dir / f"{prefix}_adapt_history.csv"
     history: list[dict[str, Any]] = []
     global_step = 0
+    first_stable_epoch: int | None = None
+    pseudo_snapshot_origin = "initial_before_epoch_1"
+    class_names = list(config["data"]["class_names"])
+    print(
+        f"[uda setup] protocol=unlabeled_target_loss_monitoring source_samples={len(source_dataset)} "
+        f"target_total={len(target_dataset)} epochs={cfg['epochs']} source_batch={cfg['source_batch_size']} "
+        f"target_batch={cfg['target_batch_size']} beta1={cfg['beta1']} beta2={cfg['beta2']} "
+        f"distance={cfg.get('distance', 'l2')} reduction={cfg.get('cluster_loss_reduction', 'sum')}"
+    )
+    print(
+        "[uda setup] pseudo_thresholds="
+        + ", ".join(f"{name}>{float(cfg['pseudo_thresholds'][name]):.4f}" for name in class_names)
+        + " checkpoint_policy=final_epoch_no_labeled_validation"
+    )
     for epoch in range(int(cfg["epochs"])):
+        epoch_started = time.perf_counter()
         model.train()
         target_loader = DataLoader(
             pseudo_dataset,
@@ -225,48 +241,103 @@ def adapt_daeac(
                     "loss_sep": float(loss_sep.detach().cpu()),
                     "loss_comp": float(loss_comp.detach().cpu()),
                     "pseudo_selected": float(len(selected_pseudo_t)),
+                    "source_batch_size": float(len(y_s)),
+                    "target_batch_size": float(len(selected_pseudo_t)),
                 }
             )
 
-        val_result = evaluate_daeac_model(model, val_loader, device, config["data"]["class_names"])
-        row = _epoch_summary(epoch_rows)
+        row = _detailed_epoch_loss_summary(epoch_rows)
+        loss_main = float(row["loss_sep"] + row["loss_comp"])
+        pseudo_diag = _pseudo_snapshot_diagnostics(pseudo_dataset, len(target_dataset), class_names, cfg)
+        center_diag = _center_diagnostics(center_memory, class_names, distance_fn)
         row.update(
             {
-                "epoch": epoch,
-                "val_accuracy": val_result["metrics"]["accuracy"],
-                "val_macro_f1": val_result["metrics"]["macro_f1"],
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "iterations": len(epoch_rows),
+                "source_samples_seen": int(sum(item["source_batch_size"] for item in epoch_rows)),
+                "target_pseudo_samples_seen": int(sum(item["target_batch_size"] for item in epoch_rows)),
+                "loss_main": loss_main,
+                "weighted_align": float(cfg["beta1"]) * float(row["loss_align"]),
+                "weighted_sep": float(cfg["beta2"]) * float(row["loss_sep"]),
+                "weighted_comp": float(cfg["beta2"]) * float(row["loss_comp"]),
+                "weighted_main": float(cfg["beta2"]) * loss_main,
                 "lr": float(optimizer.param_groups[0]["lr"]),
                 "pseudo_counts": pseudo_counts.astype(int).tolist(),
+                "pseudo_snapshot_origin": pseudo_snapshot_origin,
+                **pseudo_diag,
+                **center_diag,
             }
         )
+        stability = _stability_diagnostics(history, row, cfg)
+        row.update(stability)
+        if bool(row["losses_stable"]) and first_stable_epoch is None:
+            first_stable_epoch = epoch + 1
+        row["first_stable_epoch"] = first_stable_epoch
+        row["epochs_since_first_stable"] = 0 if first_stable_epoch is None else epoch + 1 - first_stable_epoch
+        row["epoch_seconds"] = float(time.perf_counter() - epoch_started)
         history.append(row)
-        log_row = {f"adapt/{k}": v for k, v in row.items() if k not in {"epoch", "pseudo_counts"}}
+        _write_history_csv(history, history_csv)
+        log_row = {
+            f"adapt/{k}": v
+            for k, v in row.items()
+            if k not in {"epoch", "pseudo_counts"} and isinstance(v, (int, float, bool)) and v is not None
+        }
         for idx, count in enumerate(row["pseudo_counts"]):
             log_row[f"adapt/pseudo_count_{idx}"] = count
         wandb_run.log(log_row, step=epoch)
-        if row["val_macro_f1"] >= best_macro_f1:
-            best_macro_f1 = float(row["val_macro_f1"])
-            best_epoch = epoch
-            save_daeac_checkpoint(model, config, best_path, epoch, row)
-        save_daeac_checkpoint(model, config, latest_path, epoch, row)
+        save_daeac_checkpoint(model, config, latest_path, epoch + 1, row)
         print(
-            f"[uda epoch {epoch + 1}/{cfg['epochs']}] loss={row['loss']:.4f} "
-            f"align={row['loss_align']:.4f} sep={row['loss_sep']:.4f} comp={row['loss_comp']:.4f} "
-            f"val_macro_f1={row['val_macro_f1']:.4f} pseudo={row['pseudo_counts']}"
+            f"[uda epoch {epoch + 1}/{cfg['epochs']}] steps={row['iterations']} global_step={global_step} "
+            f"lr={row['lr']:.8g} seconds={row['epoch_seconds']:.2f}\n"
+            f"  losses(mean): total={row['loss']:.6f} cls={row['loss_cls']:.6f} "
+            f"align={row['loss_align']:.6f} sep={row['loss_sep']:.6f} "
+            f"comp={row['loss_comp']:.6f} main={row['loss_main']:.6f}\n"
+            f"  weighted: beta1*align={row['weighted_align']:.6f} "
+            f"beta2*sep={row['weighted_sep']:.6f} beta2*comp={row['weighted_comp']:.6f} "
+            f"beta2*main={row['weighted_main']:.6f}\n"
+            f"  pseudo: snapshot={row['pseudo_snapshot_origin']} selected={row['pseudo_total']}/{row['target_total']} "
+            f"coverage={row['pseudo_coverage']:.6f} active_classes={row['pseudo_active_classes']} "
+            f"mean_conf={row['pseudo_mean_confidence']:.6f} mean_entropy={row['pseudo_mean_normalized_entropy']:.6f}\n"
+            f"  pseudo_by_class: "
+            + " ".join(
+                f"{name}={row[f'pseudo_count_{name}']}({row[f'pseudo_rate_{name}']:.4f})"
+                for name in class_names
+            )
+            + "\n  center_align_by_class: "
+            + " ".join(
+                f"{name}={row[f'center_align_{name}']:.6f}" if row[f'center_align_{name}'] is not None else f"{name}=NA"
+                for name in class_names
+            )
+            + f"\n  stability: align_cv={row['loss_align_cv']:.6f} main_cv={row['loss_main_cv']:.6f} "
+            f"stable={row['losses_stable']} first_stable_epoch={row['first_stable_epoch']}"
         )
         # Epoch boundary: synchronize h <- H, then freeze a complete target
-        # pseudo-label snapshot for the next epoch.
-        aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
-        aux_classifier.eval()
-        pseudo_dataset = build_pseudo_labeled_target_dataset(
-            model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
-        )
+        # pseudo-label snapshot only when another epoch will consume it.
+        if epoch + 1 < int(cfg["epochs"]):
+            aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
+            aux_classifier.eval()
+            try:
+                pseudo_dataset = build_pseudo_labeled_target_dataset(
+                    model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
+                )
+                pseudo_snapshot_origin = f"refreshed_after_epoch_{epoch + 1}"
+            except RuntimeError as exc:
+                if "No target samples passed" not in str(exc):
+                    raise
+                print(
+                    f"[uda epoch {epoch + 1}] WARNING: refreshed pseudo-label set is empty; "
+                    "retaining the previous epoch's valid snapshot."
+                )
+                pseudo_snapshot_origin = f"retained_after_empty_refresh_epoch_{epoch + 1}"
 
     summary = {
         "latest_checkpoint": str(latest_path),
-        "best_checkpoint": str(best_path),
-        "best_epoch": best_epoch,
-        "best_val_macro_f1": best_macro_f1,
+        "official_checkpoint": str(latest_path),
+        "checkpoint_policy": "final_epoch_no_labeled_validation",
+        "adaptation_monitoring": "losses_and_pseudo_label_dynamics_only",
+        "history_csv": str(history_csv),
+        "first_stable_epoch": first_stable_epoch,
         "history": history,
     }
     wandb_run.summary_update(summary)
@@ -346,7 +417,14 @@ def load_daeac_checkpoint(
 ) -> DAEACNetwork:
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model = model or build_daeac_model(config, device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    incompatible = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    allowed_missing = {"adaptation_fc.weight", "adaptation_fc.bias"} if model.adaptation_fc_enabled else set()
+    unexpected_missing = set(incompatible.missing_keys) - allowed_missing
+    if unexpected_missing or incompatible.unexpected_keys:
+        raise RuntimeError(
+            "Checkpoint/model state mismatch: "
+            f"missing={sorted(unexpected_missing)}, unexpected={sorted(incompatible.unexpected_keys)}"
+        )
     model.to(device)
     return model
 
@@ -598,3 +676,124 @@ def _epoch_summary(rows: list[dict[str, float]]) -> dict[str, float]:
         return {"loss": 0.0, "loss_cls": 0.0, "loss_align": 0.0, "loss_sep": 0.0, "loss_comp": 0.0, "pseudo_selected": 0.0}
     keys = rows[0].keys()
     return {key: float(np.mean([row[key] for row in rows])) for key in keys}
+
+
+def _detailed_epoch_loss_summary(rows: list[dict[str, float]]) -> dict[str, float]:
+    loss_keys = ("loss", "loss_cls", "loss_align", "loss_sep", "loss_comp")
+    if not rows:
+        result = {key: 0.0 for key in loss_keys}
+        for key in loss_keys:
+            result.update({f"{key}_std": 0.0, f"{key}_min": 0.0, f"{key}_max": 0.0})
+        return result
+    result: dict[str, float] = {}
+    for key in loss_keys:
+        values = np.asarray([float(row[key]) for row in rows], dtype=np.float64)
+        result[key] = float(values.mean())
+        result[f"{key}_std"] = float(values.std())
+        result[f"{key}_min"] = float(values.min())
+        result[f"{key}_max"] = float(values.max())
+    result["pseudo_selected_per_batch"] = float(np.mean([row["pseudo_selected"] for row in rows]))
+    return result
+
+
+def _pseudo_snapshot_diagnostics(
+    pseudo_dataset: DAEACPseudoLabeledDataset,
+    target_total: int,
+    class_names: list[str],
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
+    labels = pseudo_dataset.labels.numpy()
+    confidences = pseudo_dataset.confidence.numpy()
+    entropies = pseudo_dataset.normalized_entropy.numpy()
+    counts = np.bincount(labels, minlength=len(class_names)).astype(np.int64)
+    selected = int(len(labels))
+    result: dict[str, Any] = {
+        "target_total": int(target_total),
+        "pseudo_total": selected,
+        "pseudo_coverage": float(selected / max(int(target_total), 1)),
+        "pseudo_active_classes": int(np.count_nonzero(counts)),
+        "pseudo_mean_confidence": float(confidences.mean()) if selected else 0.0,
+        "pseudo_min_confidence": float(confidences.min()) if selected else 0.0,
+        "pseudo_max_confidence": float(confidences.max()) if selected else 0.0,
+        "pseudo_mean_normalized_entropy": float(entropies.mean()) if selected else 0.0,
+        "pseudo_min_normalized_entropy": float(entropies.min()) if selected else 0.0,
+        "pseudo_max_normalized_entropy": float(entropies.max()) if selected else 0.0,
+    }
+    for idx, name in enumerate(class_names):
+        mask = labels == idx
+        class_conf = confidences[mask]
+        class_entropy = entropies[mask]
+        result[f"pseudo_threshold_{name}"] = float(cfg["pseudo_thresholds"][name])
+        result[f"pseudo_count_{name}"] = int(counts[idx])
+        result[f"pseudo_rate_{name}"] = float(counts[idx] / max(selected, 1))
+        result[f"pseudo_coverage_{name}"] = float(counts[idx] / max(int(target_total), 1))
+        result[f"pseudo_mean_confidence_{name}"] = float(class_conf.mean()) if len(class_conf) else 0.0
+        result[f"pseudo_mean_entropy_{name}"] = float(class_entropy.mean()) if len(class_entropy) else 0.0
+    return result
+
+
+def _center_diagnostics(center_memory: CenterMemory, class_names: list[str], distance_fn) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    valid_pairs = 0
+    for idx, name in enumerate(class_names):
+        cs = center_memory.source[idx]
+        ct = center_memory.target[idx]
+        cm = center_memory.mixed[idx]
+        result[f"center_source_present_{name}"] = cs is not None
+        result[f"center_target_present_{name}"] = ct is not None
+        result[f"center_source_norm_{name}"] = float(torch.linalg.vector_norm(cs).cpu()) if cs is not None else None
+        result[f"center_target_norm_{name}"] = float(torch.linalg.vector_norm(ct).cpu()) if ct is not None else None
+        result[f"center_mixed_norm_{name}"] = float(torch.linalg.vector_norm(cm).cpu()) if cm is not None else None
+        if cs is not None and ct is not None:
+            result[f"center_align_{name}"] = float(distance_fn(cs, ct).detach().cpu())
+            valid_pairs += 1
+        else:
+            result[f"center_align_{name}"] = None
+    result["center_valid_class_pairs"] = valid_pairs
+    return result
+
+
+def _stability_diagnostics(history: list[dict[str, Any]], row: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    monitor_cfg = dict(cfg.get("monitoring", {}))
+    window = int(monitor_cfg.get("stability_window", 10))
+    min_epoch = int(monitor_cfg.get("stability_min_epoch", 20))
+    tolerance = float(monitor_cfg.get("stability_cv_tolerance", 0.05))
+    rows = [*history, row]
+    ready = len(rows) >= window and int(row["epoch"]) >= min_epoch
+    if not ready:
+        return {
+            "stability_window": window,
+            "stability_window_ready": False,
+            "stability_cv_tolerance": tolerance,
+            "loss_align_cv": -1.0,
+            "loss_main_cv": -1.0,
+            "losses_stable": False,
+        }
+    recent = rows[-window:]
+
+    def cv(key: str) -> float:
+        values = np.asarray([float(item[key]) for item in recent], dtype=np.float64)
+        return float(values.std() / max(abs(values.mean()), 1.0e-12))
+
+    align_cv = cv("loss_align")
+    main_cv = cv("loss_main")
+    return {
+        "stability_window": window,
+        "stability_window_ready": True,
+        "stability_cv_tolerance": tolerance,
+        "loss_align_cv": align_cv,
+        "loss_main_cv": main_cv,
+        "losses_stable": bool(align_cv <= tolerance and main_cv <= tolerance),
+    }
+
+
+def _write_history_csv(rows: list[dict[str, Any]], path: str | Path) -> None:
+    if not rows:
+        return
+    fieldnames = sorted({key for row in rows for key in row})
+    path = Path(path)
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)

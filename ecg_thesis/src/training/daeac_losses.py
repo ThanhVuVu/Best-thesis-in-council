@@ -40,12 +40,36 @@ class CustomFocalLoss(nn.Module):
         return focal_loss
 
 
+class WeightedCrossEntropyByBatchSize(nn.Module):
+    """Weighted CE matching Algorithm 1: -(1/N) sum_i w[y_i] log p_i[y_i]."""
+
+    def __init__(self, class_weights: torch.Tensor | None = None):
+        super().__init__()
+        if class_weights is None:
+            self.register_buffer("class_weights", None)
+        else:
+            self.register_buffer("class_weights", torch.as_tensor(class_weights, dtype=torch.float32))
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        if labels.numel() == 0:
+            return logits.sum() * 0.0
+        weighted_sum = F.cross_entropy(
+            logits,
+            labels,
+            weight=self.class_weights,
+            reduction="sum",
+        )
+        return weighted_sum / labels.numel()
+
+
 def weighted_cross_entropy_from_logits(
     logits: torch.Tensor,
     labels: torch.Tensor,
     class_weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    return F.cross_entropy(logits, labels, weight=class_weights, reduction="mean")
+    if labels.numel() == 0:
+        return logits.sum() * 0.0
+    return F.cross_entropy(logits, labels, weight=class_weights, reduction="sum") / labels.numel()
 
 
 def build_daeac_classification_loss(
@@ -55,7 +79,7 @@ def build_daeac_classification_loss(
 ) -> nn.Module:
     source_loss = str(cfg.get("source_loss", "weighted_ce")).lower()
     if source_loss == "weighted_ce":
-        return nn.CrossEntropyLoss(weight=class_weights)
+        return WeightedCrossEntropyByBatchSize(class_weights)
     if source_loss == "focal":
         alpha_cfg = cfg.get("focal_alpha")
         alpha = class_weights if alpha_cfg is None else torch.as_tensor(alpha_cfg, dtype=torch.float32)

@@ -39,6 +39,7 @@ def main() -> None:
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        full_source_fit=str(config["adaptation"].get("source_usage", "full")).lower() == "full",
     )
     print(f"DAEAC source fit/validation split: {split_summary}")
     target_ds = DAEACTargetUnlabeledDataset(

@@ -70,8 +70,9 @@ def main() -> None:
             input_key=input_key,
             label_key=label_key,
             class_names=class_names,
+            full_source_fit=str(config["data"].get("source_usage", "full")).lower() == "full",
         )
-        print(f"source_train/source_eval share one file; the complete source is used for fit: {split_summary}")
+        print(f"source_train/source_eval share one file; source split: {split_summary}")
 
     target = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),

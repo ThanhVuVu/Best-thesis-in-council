@@ -27,7 +27,7 @@ data:
   label_key: y
   class_names: ["N", "S", "V", "F"]
   num_classes: 4
-  source_usage: full
+  source_usage: disjoint_record_fit_validation
   target_protocol: first5_adapt_full_test
   target_split_seconds: 300.0
 
@@ -52,6 +52,7 @@ training:
 
 adaptation:
   checkpoint_prefix: daeac_uda
+  source_usage: full
   init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
   epochs: 300
   source_batch_size: 256
@@ -66,12 +67,20 @@ adaptation:
   center_ema_gamma: 0.1
   margin: 5.0
   distance: l2
-  cluster_loss_reduction: sum
+  # Normalize cluster terms by their valid classes/pairs/samples so the
+  # compacting term does not scale with dynamic pseudo-label batch size.
+  cluster_loss_reduction: mean
   pseudo_thresholds:
     N: 0.999
     S: 0.99
     V: 0.99
     F: 0.99
+  monitoring:
+    protocol: losses_and_pseudo_label_dynamics_only
+    stability_window: 10
+    stability_min_epoch: 20
+    stability_cv_tolerance: 0.05
+    checkpoint_policy: final_epoch
 
 evaluation:
   batch_size: 256

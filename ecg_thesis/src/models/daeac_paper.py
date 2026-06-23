@@ -181,6 +181,7 @@ class DAEACNetwork(nn.Module):
         dilations: tuple[int, ...] = (1, 6, 12, 18),
         se_reduction: int = 16,
         dropout: float = 0.0,
+        adaptation_fc: bool = False,
     ):
         super().__init__()
         self.feature_extractor = DAEACFeatureExtractor(
@@ -191,15 +192,24 @@ class DAEACNetwork(nn.Module):
             se_reduction=se_reduction,
         )
         self.classifier = ClassifierH(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
+        self.adaptation_fc = nn.Linear(feature_dim, feature_dim) if adaptation_fc else nn.Identity()
+        self.adaptation_fc_enabled = bool(adaptation_fc)
         self.feature_dim = int(feature_dim)
         self.num_classes = int(num_classes)
         self.apply(self._init_weights)
+        if isinstance(self.adaptation_fc, nn.Linear):
+            nn.init.eye_(self.adaptation_fc.weight)
+            nn.init.zeros_(self.adaptation_fc.bias)
 
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
-        return self.feature_extractor(x)
+        return self.adaptation_fc(self.feature_extractor(x))
 
     def extract_feature_layers(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        return self.feature_extractor.forward_layers(x)
+        layers = self.feature_extractor.forward_layers(x)
+        layers["pre_adaptation_gap"] = layers["gap_embed"]
+        layers["dan_fc"] = self.adaptation_fc(layers["gap_embed"])
+        layers["gap_embed"] = layers["dan_fc"]
+        return layers
 
     def forward(self, x: torch.Tensor, return_logits: bool = False):
         features = self.extract_features(x)

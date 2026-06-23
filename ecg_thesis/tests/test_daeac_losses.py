@@ -11,10 +11,29 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.training.daeac_losses import CustomFocalLoss, build_daeac_classification_loss
+from src.training.daeac_losses import (
+    CustomFocalLoss,
+    WeightedCrossEntropyByBatchSize,
+    build_daeac_classification_loss,
+    weighted_cross_entropy_from_logits,
+)
 
 
 class CustomFocalLossTest(unittest.TestCase):
+    def test_weighted_ce_divides_by_batch_size_as_algorithm_one(self) -> None:
+        logits = torch.tensor([[2.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        labels = torch.tensor([0, 1], dtype=torch.long)
+        weights = torch.tensor([1.0, 3.0], dtype=torch.float32)
+        per_sample = F.cross_entropy(logits, labels, weight=weights, reduction="none")
+        expected = per_sample.sum() / len(labels)
+
+        functional = weighted_cross_entropy_from_logits(logits, labels, weights)
+        module = WeightedCrossEntropyByBatchSize(weights)
+
+        self.assertTrue(torch.allclose(functional, expected))
+        self.assertTrue(torch.allclose(module(logits, labels), expected))
+        self.assertFalse(torch.allclose(expected, F.cross_entropy(logits, labels, weight=weights)))
+
     def test_gamma_zero_without_alpha_matches_cross_entropy(self) -> None:
         logits = torch.tensor([[2.0, 0.5, -1.0], [0.1, 1.5, 0.3]], dtype=torch.float32)
         labels = torch.tensor([0, 2], dtype=torch.long)
@@ -56,4 +75,3 @@ class CustomFocalLossTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
