@@ -38,6 +38,11 @@ class DAEACDataset(Dataset):
         self.data = np.load(self.path, allow_pickle=True)
         self.input_key = _resolve_input_key(self.data, self.path, requested_input_key)
         self.x = _normalize_input_array(self.data[self.input_key].astype(np.float32), self.path, self.input_key)
+
+        # Ablation mode: neutralize RR feature rows (index 1 and 2) to 1.0 (neutral ratio)
+        self.x[:, 0, 1, :] = 1.0
+        self.x[:, 0, 2, :] = 1.0
+
         _validate_input_shape(self.x, self.path, self.input_key)
 
         self.y: np.ndarray | None = None

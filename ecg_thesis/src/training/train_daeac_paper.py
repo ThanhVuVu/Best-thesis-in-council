@@ -336,8 +336,7 @@ def adapt_daeac(
                 f"{name}={row[f'center_align_{name}']:.6f}" if row[f'center_align_{name}'] is not None else f"{name}=NA"
                 for name in class_names
             )
-            + f"\n  stability: align_cv={row['loss_align_cv']:.6f} main_cv={row['loss_main_cv']:.6f} "
-            f"stable={row['losses_stable']} first_stable_epoch={row['first_stable_epoch']} v_measure={row['v_measure']:.6f}"
+            + f"\n  validation: v_measure={row['v_measure']:.6f} valid={row['valid']}"
         )
         # Epoch boundary: synchronize h <- H, then freeze a complete target
         # pseudo-label snapshot only when another epoch will consume it.
