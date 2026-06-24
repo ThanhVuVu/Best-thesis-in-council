@@ -19,6 +19,7 @@ from src.models.daeac_adversarial import DAEACADDAModel, DAEACCDANModel, DAEACDA
 from src.training.daeac_losses import build_daeac_classification_loss
 from src.training.metrics import classification_metrics
 from src.training.train_daeac_paper import build_daeac_model
+from src.training.v_measure_validation import aggregate_v_measure, ericsson_v_measure, save_v_measure_assignments
 from src.utils.io import ensure_dir
 from src.utils.wandb_logging import init_wandb, should_log_artifacts
 
@@ -27,6 +28,7 @@ def train_daeac_dann(
     source_dataset: DAEACDataset,
     source_val_dataset: DAEACDataset,
     target_dataset,
+    target_val_dataset,
     config: dict[str, Any],
     output_dir: str | Path,
     device: torch.device,
@@ -44,6 +46,7 @@ def train_daeac_dann(
     source_loader = _loader(source_dataset, int(train_cfg["source_batch_size"]), True, device)
     target_loader = _loader(target_dataset, int(train_cfg["target_batch_size"]), True, device)
     val_loader = _loader(source_val_dataset, int(train_cfg["source_batch_size"]), False, device)
+    target_val_loader = _loader(target_val_dataset, int(train_cfg["target_batch_size"]), False, device)
     cls_loss_fn = _classification_loss(source_dataset, config, train_cfg, device)
     domain_loss_fn = torch.nn.CrossEntropyLoss()
     optimizer = _optimizer(
@@ -58,7 +61,7 @@ def train_daeac_dann(
     scheduler = _scheduler(optimizer, train_cfg)
 
     total_epochs = int(train_cfg["epochs"])
-    steps_per_epoch = max(len(source_loader), len(target_loader))
+    steps_per_epoch = len(target_loader)
     total_steps = max(total_epochs * steps_per_epoch, 1)
     history: list[dict[str, Any]] = []
     best_f1 = -1.0
@@ -72,8 +75,8 @@ def train_daeac_dann(
         model.train()
         rows = []
         source_true, source_pred, domain_true, domain_pred = [], [], [], []
-        source_iter = cycle(source_loader) if len(source_loader) < steps_per_epoch else iter(source_loader)
-        target_iter = cycle(target_loader) if len(target_loader) < steps_per_epoch else iter(target_loader)
+        source_iter = cycle(source_loader)
+        target_iter = iter(target_loader)
         progress = tqdm(range(steps_per_epoch), desc=f"{prefix} epoch {epoch}/{total_epochs}", dynamic_ncols=True)
         for _ in progress:
             global_step += 1
@@ -135,10 +138,11 @@ def train_daeac_dann(
                 "lr": float(optimizer.param_groups[0]["lr"]),
             }
         )
+        _update_v_measure(epoch_row, model, val_result, target_val_loader, device, config, ckpt_dir, prefix)
         _step_scheduler(scheduler, epoch_row["source_val_macro_f1"])
         history.append(epoch_row)
         wandb_run.log({f"train/{k}": v for k, v in epoch_row.items() if k != "epoch"}, step=epoch)
-        print(f"{prefix} epoch {epoch}: val_macro_f1={epoch_row['source_val_macro_f1']:.4f}, domain_acc={epoch_row['domain_accuracy']:.4f}")
+        print(f"{prefix} epoch {epoch}: v_measure={epoch_row['v_measure']:.4f}, val_macro_f1={epoch_row['source_val_macro_f1']:.4f}, domain_acc={epoch_row['domain_accuracy']:.4f}")
         best_f1, best_epoch, stale_epochs = _save_epoch_checkpoint(
             model,
             optimizer,
@@ -155,7 +159,7 @@ def train_daeac_dann(
             latest_path,
             backup_dir,
         )
-        if stale_epochs >= int(train_cfg.get("early_stopping_patience", 999999)):
+        if epoch >= int(config.get("validation", {}).get("min_epochs", 10)) and stale_epochs >= int(config.get("validation", {}).get("patience", 10)):
             break
 
     summary = _finish_training(prefix, best_path, latest_path, history, best_epoch, best_f1, log_dir, backup_dir, wandb_run, config)
@@ -166,6 +170,7 @@ def train_daeac_cdan(
     source_dataset: DAEACDataset,
     source_val_dataset: DAEACDataset,
     target_dataset,
+    target_val_dataset,
     config: dict[str, Any],
     output_dir: str | Path,
     device: torch.device,
@@ -183,6 +188,7 @@ def train_daeac_cdan(
     source_loader = _loader(source_dataset, int(train_cfg["source_batch_size"]), True, device)
     target_loader = _loader(target_dataset, int(train_cfg["target_batch_size"]), True, device)
     val_loader = _loader(source_val_dataset, int(train_cfg["source_batch_size"]), False, device)
+    target_val_loader = _loader(target_val_dataset, int(train_cfg["target_batch_size"]), False, device)
     cls_loss_fn = _classification_loss(source_dataset, config, train_cfg, device)
     domain_loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     optimizer = _optimizer(
@@ -197,7 +203,7 @@ def train_daeac_cdan(
     scheduler = _scheduler(optimizer, train_cfg)
 
     total_epochs = int(train_cfg["epochs"])
-    steps_per_epoch = max(len(source_loader), len(target_loader))
+    steps_per_epoch = len(target_loader)
     total_steps = max(total_epochs * steps_per_epoch, 1)
     history: list[dict[str, Any]] = []
     best_f1 = -1.0
@@ -211,8 +217,8 @@ def train_daeac_cdan(
         model.train()
         rows = []
         source_true, source_pred, domain_true, domain_pred = [], [], [], []
-        source_iter = cycle(source_loader) if len(source_loader) < steps_per_epoch else iter(source_loader)
-        target_iter = cycle(target_loader) if len(target_loader) < steps_per_epoch else iter(target_loader)
+        source_iter = cycle(source_loader)
+        target_iter = iter(target_loader)
         progress = tqdm(range(steps_per_epoch), desc=f"{prefix} epoch {epoch}/{total_epochs}", dynamic_ncols=True)
         for _ in progress:
             global_step += 1
@@ -287,10 +293,11 @@ def train_daeac_cdan(
                 "lr": float(optimizer.param_groups[0]["lr"]),
             }
         )
+        _update_v_measure(epoch_row, model, val_result, target_val_loader, device, config, ckpt_dir, prefix)
         _step_scheduler(scheduler, epoch_row["source_val_macro_f1"])
         history.append(epoch_row)
         wandb_run.log({f"train/{k}": v for k, v in epoch_row.items() if k != "epoch"}, step=epoch)
-        print(f"{prefix} epoch {epoch}: val_macro_f1={epoch_row['source_val_macro_f1']:.4f}, domain_acc={epoch_row['domain_accuracy']:.4f}")
+        print(f"{prefix} epoch {epoch}: v_measure={epoch_row['v_measure']:.4f}, val_macro_f1={epoch_row['source_val_macro_f1']:.4f}, domain_acc={epoch_row['domain_accuracy']:.4f}")
         best_f1, best_epoch, stale_epochs = _save_epoch_checkpoint(
             model,
             optimizer,
@@ -307,7 +314,7 @@ def train_daeac_cdan(
             latest_path,
             backup_dir,
         )
-        if stale_epochs >= int(train_cfg.get("early_stopping_patience", 999999)):
+        if epoch >= int(config.get("validation", {}).get("min_epochs", 10)) and stale_epochs >= int(config.get("validation", {}).get("patience", 10)):
             break
 
     return _finish_training(prefix, best_path, latest_path, history, best_epoch, best_f1, log_dir, backup_dir, wandb_run, config)
@@ -317,6 +324,7 @@ def train_daeac_adda(
     source_dataset: DAEACDataset,
     source_val_dataset: DAEACDataset,
     target_dataset,
+    target_val_dataset,
     config: dict[str, Any],
     output_dir: str | Path,
     device: torch.device,
@@ -333,6 +341,7 @@ def train_daeac_adda(
     source_loader = _loader(source_dataset, int(train_cfg["batch_size"]), True, device)
     target_loader = _loader(target_dataset, int(train_cfg["batch_size"]), True, device)
     val_loader = _loader(source_val_dataset, int(train_cfg["batch_size"]), False, device)
+    target_val_loader = _loader(target_val_dataset, int(train_cfg["batch_size"]), False, device)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     optimizer_d = torch.optim.AdamW(
         model.domain_discriminator.parameters(),
@@ -347,7 +356,7 @@ def train_daeac_adda(
     scheduler_m = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_m, mode="max", factor=0.5, patience=3)
 
     total_epochs = int(train_cfg["epochs"])
-    steps_per_epoch = max(len(source_loader), len(target_loader))
+    steps_per_epoch = len(target_loader)
     history: list[dict[str, Any]] = []
     best_f1 = -1.0
     best_epoch = -1
@@ -361,8 +370,8 @@ def train_daeac_adda(
         rows = []
         domain_true, domain_pred = [], []
         target_pseudo_counts = np.zeros(int(config["data"]["num_classes"]), dtype=np.int64)
-        source_iter = cycle(source_loader) if len(source_loader) < steps_per_epoch else iter(source_loader)
-        target_iter = cycle(target_loader) if len(target_loader) < steps_per_epoch else iter(target_loader)
+        source_iter = cycle(source_loader)
+        target_iter = iter(target_loader)
         progress = tqdm(range(steps_per_epoch), desc=f"{prefix} epoch {epoch}/{total_epochs}", dynamic_ncols=True)
         for _ in progress:
             x_s = _batch_x(next(source_iter), device)
@@ -438,10 +447,11 @@ def train_daeac_adda(
         for idx, name in enumerate(class_names):
             epoch_row[f"target_pseudo_count_{name}"] = int(target_pseudo_counts[idx])
             epoch_row[f"target_pseudo_rate_{name}"] = float(target_pseudo_counts[idx] / total_pseudo)
+        _update_v_measure(epoch_row, model, val_result, target_val_loader, device, config, ckpt_dir, prefix)
         scheduler_m.step(epoch_row["source_val_macro_f1"])
         history.append(epoch_row)
         wandb_run.log({f"train/{k}": v for k, v in epoch_row.items() if k != "epoch"}, step=epoch)
-        print(f"{prefix} epoch {epoch}: val_macro_f1={epoch_row['source_val_macro_f1']:.4f}, domain_acc={epoch_row['domain_accuracy']:.4f}")
+        print(f"{prefix} epoch {epoch}: v_measure={epoch_row['v_measure']:.4f}, val_macro_f1={epoch_row['source_val_macro_f1']:.4f}, domain_acc={epoch_row['domain_accuracy']:.4f}")
         best_f1, best_epoch, stale_epochs = _save_epoch_checkpoint(
             model,
             {"discriminator": optimizer_d, "target_encoder": optimizer_m},
@@ -458,7 +468,7 @@ def train_daeac_adda(
             latest_path,
             backup_dir,
         )
-        if stale_epochs >= int(train_cfg.get("early_stopping_patience", 999999)):
+        if epoch >= int(config.get("validation", {}).get("min_epochs", 10)) and stale_epochs >= int(config.get("validation", {}).get("patience", 10)):
             break
 
     return _finish_training(prefix, best_path, latest_path, history, best_epoch, best_f1, log_dir, backup_dir, wandb_run, config)
@@ -474,7 +484,7 @@ def evaluate_daeac_adversarial_model(
 ) -> dict[str, Any]:
     model.to(device)
     model.eval()
-    y_true, y_pred, probs_all, features_all = [], [], [], []
+    y_true, y_pred, probs_all, features_all, logits_all = [], [], [], [], []
     for batch in tqdm(loader, desc=desc, dynamic_ncols=True):
         x, y = _source_batch(batch, device)
         logits, features = model(x, return_embedding=True)
@@ -482,6 +492,7 @@ def evaluate_daeac_adversarial_model(
         y_true.append(y.detach().cpu().numpy())
         y_pred.append(probs.argmax(dim=1).detach().cpu().numpy())
         probs_all.append(probs.detach().cpu().numpy())
+        logits_all.append(logits.detach().cpu().numpy())
         features_all.append(features.detach().cpu().numpy())
     true = np.concatenate(y_true) if y_true else np.zeros(0, dtype=np.int64)
     pred = np.concatenate(y_pred) if y_pred else np.zeros(0, dtype=np.int64)
@@ -489,6 +500,7 @@ def evaluate_daeac_adversarial_model(
         "y_true": true,
         "y_pred": pred,
         "probabilities": np.concatenate(probs_all) if probs_all else np.zeros((0, len(class_names)), dtype=np.float32),
+        "logits": np.concatenate(logits_all) if logits_all else np.zeros((0, len(class_names)), dtype=np.float32),
         "features": np.concatenate(features_all) if features_all else np.zeros((0, 0), dtype=np.float32),
         "metrics": _daeac_metrics(true, pred, class_names),
     }
@@ -694,6 +706,25 @@ def _mean_rows(rows: list[dict[str, Any]]) -> dict[str, float]:
     return {key: float(np.mean([float(row[key]) for row in rows])) for key in keys}
 
 
+@torch.no_grad()
+def _update_v_measure(epoch_row, model, source_result, target_val_loader, device, config, ckpt_dir, prefix) -> None:
+    model.eval()
+    target_logits = []
+    for batch in target_val_loader:
+        logits, _ = model(_target_batch(batch, device), return_embedding=True)
+        target_logits.append(logits.detach().cpu().numpy())
+    result = ericsson_v_measure(
+        source_result["logits"],
+        source_result["y_true"],
+        np.concatenate(target_logits),
+        num_classes=int(config["data"]["num_classes"]),
+        random_state=int(config.get("seed", 42)),
+        beta=float(config.get("validation", {}).get("beta", 1.0)),
+    )
+    epoch_row.update(aggregate_v_measure(result))
+    save_v_measure_assignments(ckpt_dir / f"{prefix}_latest_v_measure_assignments.npz", result)
+
+
 def _save_epoch_checkpoint(
     model,
     optimizer,
@@ -710,12 +741,17 @@ def _save_epoch_checkpoint(
     latest_path: Path,
     backup_dir: Path | None,
 ) -> tuple[float, int, int]:
-    current_f1 = float(row["source_val_macro_f1"])
-    if current_f1 > best_f1:
+    current_f1 = float(row["v_measure"])
+    min_delta = float(config.get("validation", {}).get("min_delta", 1e-4))
+    if bool(row.get("valid", False)) and current_f1 > best_f1 + min_delta:
         best_f1 = current_f1
         best_epoch = epoch
         stale_epochs = 0
         _save_checkpoint(_payload(model, optimizer, scheduler, config, method, epoch, row, best_f1, best_epoch, stale_epochs, history), best_path, backup_dir)
+        prefix = best_path.stem.removesuffix("_best")
+        latest_assignments = best_path.parent / f"{prefix}_latest_v_measure_assignments.npz"
+        if latest_assignments.exists():
+            shutil.copy2(latest_assignments, best_path.parent / f"{prefix}_best_v_measure_assignments.npz")
     else:
         stale_epochs += 1
     _save_checkpoint(_payload(model, optimizer, scheduler, config, method, epoch, row, best_f1, best_epoch, stale_epochs, history), latest_path, backup_dir)
@@ -766,7 +802,8 @@ def _finish_training(prefix, best_path, latest_path, history, best_epoch, best_f
         "latest_checkpoint": str(latest_path),
         "checkpoint_backup_dir": str(backup_dir) if backup_dir is not None else None,
         "best_epoch": int(best_epoch),
-        "best_source_val_macro_f1": float(best_f1),
+        "best_v_measure": float(best_f1),
+        "selection_policy": "maximum_ericsson_v_measure_source_val_plus_target_val_logits",
         "history": history,
     }
     wandb_run.summary_update(summary)

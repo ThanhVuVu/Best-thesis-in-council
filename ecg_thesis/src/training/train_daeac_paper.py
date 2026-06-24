@@ -23,6 +23,7 @@ from src.training.daeac_losses import (
 )
 from src.training.mk_mmd import center_cluster_mk_mmd_loss, center_pair_reference_distance
 from src.training.metrics import classification_metrics
+from src.training.v_measure_validation import aggregate_v_measure, ericsson_v_measure, save_v_measure_assignments
 from src.utils.io import ensure_dir
 from src.utils.wandb_logging import init_wandb
 
@@ -121,7 +122,11 @@ def adapt_daeac(
     config: dict[str, Any],
     output_dir: str | Path,
     device: torch.device,
+    source_val_dataset: DAEACDataset | None = None,
+    target_val_dataset: DAEACTargetUnlabeledDataset | None = None,
 ) -> dict[str, Any]:
+    if source_val_dataset is None or target_val_dataset is None:
+        raise ValueError("Ericsson V-Measure adaptation requires disjoint source_val_dataset and target_val_dataset")
     cfg = config["adaptation"]
     output_dir = Path(output_dir)
     ckpt_dir = ensure_dir(output_dir / "checkpoints")
@@ -133,6 +138,8 @@ def adapt_daeac(
 
     source_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=True, num_workers=0)
     target_inference_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0)
+    source_val_loader = DataLoader(source_val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
+    target_val_loader = DataLoader(target_val_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
@@ -165,6 +172,7 @@ def adapt_daeac(
     wandb_run = init_wandb(config, job_type="adapt_daeac", default_name=prefix)
 
     latest_path = ckpt_dir / f"{prefix}_latest.pt"
+    best_path = ckpt_dir / f"{prefix}_best.pt"
     log_dir = ensure_dir(output_dir / "logs")
     history_csv = log_dir / f"{prefix}_adapt_history.csv"
     history: list[dict[str, Any]] = []
@@ -172,6 +180,9 @@ def adapt_daeac(
     first_stable_epoch: int | None = None
     pseudo_snapshot_origin = "initial_before_epoch_1"
     class_names = list(config["data"]["class_names"])
+    best_v_measure = -1.0
+    best_epoch = -1
+    stale_epochs = 0
     print(
         f"[uda setup] protocol=unlabeled_target_loss_monitoring source_samples={len(source_dataset)} "
         f"target_total={len(target_dataset)} epochs={cfg['epochs']} source_batch={cfg['source_batch_size']} "
@@ -181,7 +192,7 @@ def adapt_daeac(
     print(
         "[uda setup] pseudo_thresholds="
         + ", ".join(f"{name}>{float(cfg['pseudo_thresholds'][name]):.4f}" for name in class_names)
-        + " checkpoint_policy=final_epoch_no_labeled_validation"
+        + " checkpoint_policy=maximum_ericsson_v_measure"
     )
     for epoch in range(int(cfg["epochs"])):
         epoch_started = time.perf_counter()
@@ -270,6 +281,23 @@ def adapt_daeac(
         )
         stability = _stability_diagnostics(history, row, cfg)
         row.update(stability)
+        source_result = evaluate_daeac_model(model, source_val_loader, device, class_names)
+        target_logits = _daeac_target_logits(model, target_val_loader, device)
+        v_result = ericsson_v_measure(
+            source_result["logits"], source_result["y_true"], target_logits,
+            num_classes=int(config["data"]["num_classes"]), random_state=int(config.get("seed", 42)),
+        )
+        row.update(aggregate_v_measure(v_result))
+        save_v_measure_assignments(ckpt_dir / f"{prefix}_latest_v_measure_assignments.npz", v_result)
+        min_delta = float(config.get("validation", {}).get("min_delta", 1e-4))
+        if bool(row["valid"]) and row["v_measure"] > best_v_measure + min_delta:
+            best_v_measure = float(row["v_measure"])
+            best_epoch = epoch + 1
+            stale_epochs = 0
+            save_daeac_checkpoint(model, config, best_path, epoch + 1, row)
+            save_v_measure_assignments(ckpt_dir / f"{prefix}_best_v_measure_assignments.npz", v_result)
+        else:
+            stale_epochs += 1
         if bool(row["losses_stable"]) and first_stable_epoch is None:
             first_stable_epoch = epoch + 1
         row["first_stable_epoch"] = first_stable_epoch
@@ -309,7 +337,7 @@ def adapt_daeac(
                 for name in class_names
             )
             + f"\n  stability: align_cv={row['loss_align_cv']:.6f} main_cv={row['loss_main_cv']:.6f} "
-            f"stable={row['losses_stable']} first_stable_epoch={row['first_stable_epoch']}"
+            f"stable={row['losses_stable']} first_stable_epoch={row['first_stable_epoch']} v_measure={row['v_measure']:.6f}"
         )
         # Epoch boundary: synchronize h <- H, then freeze a complete target
         # pseudo-label snapshot only when another epoch will consume it.
@@ -329,12 +357,17 @@ def adapt_daeac(
                     "retaining the previous epoch's valid snapshot."
                 )
                 pseudo_snapshot_origin = f"retained_after_empty_refresh_epoch_{epoch + 1}"
+        if epoch + 1 >= int(config.get("validation", {}).get("min_epochs", 20)) and stale_epochs >= int(config.get("validation", {}).get("patience", 10)):
+            break
 
     summary = {
         "latest_checkpoint": str(latest_path),
-        "official_checkpoint": str(latest_path),
-        "checkpoint_policy": "final_epoch_no_labeled_validation",
-        "adaptation_monitoring": "losses_and_pseudo_label_dynamics_only",
+        "official_checkpoint": str(best_path),
+        "best_checkpoint": str(best_path),
+        "best_epoch": best_epoch,
+        "best_v_measure": best_v_measure,
+        "checkpoint_policy": "maximum_ericsson_v_measure_source_val_plus_target_val_logits",
+        "adaptation_monitoring": "losses_pseudo_labels_and_ericsson_v_measure",
         "history_csv": str(history_csv),
         "first_stable_epoch": first_stable_epoch,
         "history": history,
@@ -342,6 +375,17 @@ def adapt_daeac(
     wandb_run.summary_update(summary)
     wandb_run.finish()
     return summary
+
+
+@torch.no_grad()
+def _daeac_target_logits(model, loader: DataLoader, device: torch.device) -> np.ndarray:
+    values = []
+    model.eval()
+    for batch in loader:
+        x = batch[0] if isinstance(batch, (tuple, list)) else batch
+        _, logits, _ = model(x.to(device), return_logits=True)
+        values.append(logits.detach().cpu().numpy())
+    return np.concatenate(values)
 
 
 def evaluate_daeac_model(
@@ -354,25 +398,29 @@ def evaluate_daeac_model(
     y_true: list[np.ndarray] = []
     y_pred: list[np.ndarray] = []
     probs_all: list[np.ndarray] = []
+    logits_all: list[np.ndarray] = []
     features_all: list[np.ndarray] = []
     with torch.no_grad():
         for batch in loader:
             x, y = batch[:2]
             x = x.to(device)
-            features, _, probs = model(x, return_logits=True)
+            features, logits, probs = model(x, return_logits=True)
             probs_cpu = probs.detach().cpu().numpy()
             y_true.append(y.numpy())
             y_pred.append(probs_cpu.argmax(axis=1))
             probs_all.append(probs_cpu)
+            logits_all.append(logits.detach().cpu().numpy())
             features_all.append(features.detach().cpu().numpy())
     true = np.concatenate(y_true) if y_true else np.zeros(0, dtype=np.int64)
     pred = np.concatenate(y_pred) if y_pred else np.zeros(0, dtype=np.int64)
     probs = np.concatenate(probs_all) if probs_all else np.zeros((0, len(class_names)), dtype=np.float32)
+    logits = np.concatenate(logits_all) if logits_all else np.zeros((0, len(class_names)), dtype=np.float32)
     features = np.concatenate(features_all) if features_all else np.zeros((0, 256), dtype=np.float32)
     return {
         "y_true": true,
         "y_pred": pred,
         "probabilities": probs,
+        "logits": logits,
         "features": features,
         "metrics": daeac_metrics(true, pred, class_names),
     }

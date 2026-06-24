@@ -24,18 +24,18 @@ class _IdentityFeatureModel(nn.Module):
 
 
 class DAEACAdaptationSpecificationTests(unittest.TestCase):
-    def test_paper_adaptation_uses_loss_monitoring_and_final_checkpoint(self) -> None:
+    def test_paper_adaptation_uses_ericsson_v_measure_checkpoint(self) -> None:
         root = Path(__file__).resolve().parents[1]
         config = load_config(root / "configs" / "phase6_daeac_paper.yaml")
-        self.assertEqual(config["adaptation"]["monitoring"]["protocol"], "losses_and_pseudo_label_dynamics_only")
-        self.assertEqual(config["adaptation"]["monitoring"]["checkpoint_policy"], "final_epoch")
+        self.assertEqual(config["adaptation"]["monitoring"]["protocol"], "ericsson_v_measure_source_val_plus_target_val_logits")
+        self.assertEqual(config["adaptation"]["monitoring"]["checkpoint_policy"], "maximum_v_measure_with_early_stopping")
         self.assertEqual(config["adaptation"]["source_usage"], "full")
         notebook = json.loads((root / "notebooks" / "phase6_daeac_paper_kaggle.ipynb").read_text(encoding="utf-8"))
         code = "\n".join(
             "".join(cell.get("source", [])) for cell in notebook["cells"] if cell.get("cell_type") == "code"
         )
-        self.assertIn("daeac_uda_latest.pt", code)
-        self.assertNotIn("daeac_uda_best.pt", code)
+        self.assertIn("_best.pt", code)
+        self.assertNotIn("RUN_PRETRAIN = True", code)
 
     def test_source_fit_and_validation_are_record_disjoint_when_paths_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

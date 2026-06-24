@@ -25,6 +25,7 @@ def predict_model(
     y_true = []
     y_pred = []
     probs = []
+    logits_all = []
     embeddings = []
     metadata = []
 
@@ -55,12 +56,14 @@ def predict_model(
         y_true.append(y.detach().cpu().numpy())
         y_pred.append(pred.detach().cpu().numpy())
         probs.append(p.detach().cpu().numpy())
+        logits_all.append(logits.detach().cpu().numpy())
         progress.set_postfix(batch_size=int(inputs[0].shape[0]), device=str(inputs[0].device), refresh=False)
 
     result = {
         "y_true": np.concatenate(y_true),
         "y_pred": np.concatenate(y_pred),
         "probabilities": np.concatenate(probs),
+        "logits": np.concatenate(logits_all),
         "metadata": metadata,
     }
     if collect_embeddings:

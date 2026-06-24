@@ -55,7 +55,7 @@ def _check_dataset_paths(config: dict[str, Any], report: dict[str, Any]) -> None
         report["checks"].append("full_target_transductive_shared_input_path_declared")
     else:
         report["checks"].append("target_unlabeled_path_is_not_target_test_path")
-    for key in ("source_train", "source_eval", "target_unlabeled", "target_test"):
+    for key in ("source_train", "source_eval", "target_unlabeled", "target_val", "target_test"):
         path = cfg_path(config, "data", key)
         if not path.exists():
             raise FileNotFoundError(f"Missing data.{key}: {path}")
@@ -68,7 +68,6 @@ def _check_dataset_paths(config: dict[str, Any], report: dict[str, Any]) -> None
 
 def _check_train_scripts_do_not_load_eval_data(config: dict[str, Any], report: dict[str, Any]) -> None:
     base = Path(config["_base_dir"])
-    dev_enabled = bool(config.get("adaptation", {}).get("dev", {}).get("enabled", False))
     for rel in TRAIN_SCRIPT_NAMES:
         path = base / rel
         if not path.exists():
@@ -76,14 +75,9 @@ def _check_train_scripts_do_not_load_eval_data(config: dict[str, Any], report: d
         text = path.read_text(encoding="utf-8")
         if "external_targets" in text:
             raise ValueError(f"{rel} contains eval-only config key 'external_targets'.")
-        if "target_test" not in text:
-            continue
-        pure_mcc_dev_script = rel.endswith("/01_train.py") and dev_enabled
-        if not pure_mcc_dev_script:
-            raise ValueError(f"{rel} references target_test outside an enabled DEV workflow.")
-        if "dev_target_ds = DAEACTargetUnlabeledDataset(" not in text:
-            raise ValueError("DEV target_test must be loaded through DAEACTargetUnlabeledDataset.")
-    report["checks"].append("train_scripts_use_target_test_only_as_unlabeled_dev_input")
+        if 'cfg_path(config, "data", "target_test")' in text:
+            raise ValueError(f"{rel} loads target_test during training.")
+    report["checks"].append("train_scripts_do_not_load_target_test")
 
 
 def _inspect_all_npz(

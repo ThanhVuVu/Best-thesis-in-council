@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--config", default="configs/phase6_daeac_paper.yaml")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--method-name", default="daeac")
+    parser.add_argument("--domain-pair", choices=["ds1_ds2", "ds1_incart", "ds1_svdb", "mitbih_incart", "mitbih_svdb"])
     parser.add_argument(
         "--dataset",
         default="target",
@@ -28,6 +29,7 @@ def main() -> None:
     add_wandb_args(parser)
     args = parser.parse_args()
     config = load_phase1_config(args.config)
+    _apply_domain_pair(config, args.domain_pair)
     apply_wandb_overrides(config, args)
     device = device_from_torch()
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
@@ -84,6 +86,18 @@ def _resolve_data_path(config: dict, value: str | Path) -> Path:
     if path.is_absolute():
         return path
     return Path(config["_base_dir"]) / path
+
+
+def _apply_domain_pair(config: dict, pair: str | None) -> None:
+    if pair is None:
+        return
+    source, target = {
+        "ds1_ds2": ("ds1", "ds2"), "ds1_incart": ("ds1", "incart"), "ds1_svdb": ("ds1", "svdb"),
+        "mitbih_incart": ("mitbih", "incart"), "mitbih_svdb": ("mitbih", "svdb"),
+    }[pair]
+    root = "data/processed/phase6_daeac_record_splits"
+    config["data"].update(source_eval=f"{root}/{source}_val.npz", target_test=f"{root}/{target}_test.npz")
+    config["paths"]["output_dir"] = f"outputs/phase6_daeac_paper_{pair}"
 
 
 def _write_predictions(path: Path, result: dict, class_names: list[str]) -> None:

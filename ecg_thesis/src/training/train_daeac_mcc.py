@@ -9,14 +9,15 @@ from torch.utils.data import DataLoader
 
 from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset
 from src.training.daeac_losses import weighted_cross_entropy_from_logits
-from src.training.dev_validation import estimate_dev_risk
 from src.training.mcc_loss import minimum_class_confusion_loss
 from src.training.train_daeac_paper import (
     _class_weights,
     build_daeac_model,
     load_daeac_checkpoint,
+    evaluate_daeac_model,
     save_daeac_checkpoint,
 )
+from src.training.v_measure_validation import aggregate_v_measure, ericsson_v_measure, save_v_measure_assignments
 from src.utils.io import ensure_dir
 from src.utils.wandb_logging import init_wandb
 
@@ -41,10 +42,9 @@ def train_daeac_mcc(
 
     source_loader = DataLoader(source_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=True, num_workers=0)
     target_loader = DataLoader(target_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=True, num_workers=0)
-    dev_batch_size = int(cfg.get("dev", {}).get("feature_batch_size", cfg["target_batch_size"]))
-    dev_source_loader = DataLoader(source_dataset, batch_size=dev_batch_size, shuffle=False, num_workers=0)
-    dev_val_loader = DataLoader(source_val_dataset, batch_size=dev_batch_size, shuffle=False, num_workers=0)
-    dev_target_loader = DataLoader(dev_target_dataset, batch_size=dev_batch_size, shuffle=False, num_workers=0)
+    val_batch_size = int(config.get("evaluation", {}).get("batch_size", cfg["target_batch_size"]))
+    source_val_loader = DataLoader(source_val_dataset, batch_size=val_batch_size, shuffle=False, num_workers=0)
+    target_val_loader = DataLoader(dev_target_dataset, batch_size=val_batch_size, shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
@@ -55,11 +55,10 @@ def train_daeac_mcc(
     wandb_run = init_wandb(config, job_type="train_daeac_mcc", default_name=prefix)
 
     latest_path = ckpt_dir / f"{prefix}_latest.pt"
-    best_dev_path = ckpt_dir / f"{prefix}_best_dev.pt"
-    best_dev_risk = float("inf")
+    best_dev_path = ckpt_dir / f"{prefix}_best.pt"
+    best_dev_risk = -1.0
     best_dev_epoch = -1
-    dev_cfg = dict(cfg.get("dev", {}))
-    dev_interval = int(dev_cfg.get("interval_epochs", 1))
+    stale_epochs = 0
     history: list[dict[str, Any]] = []
     for epoch in range(int(cfg["epochs"])):
         model.train()
@@ -112,7 +111,7 @@ def train_daeac_mcc(
         target_total = max(int(pred_counts.sum()), 1)
         row.update(
             {
-                "epoch": epoch,
+                "epoch": epoch + 1,
                 "lr": float(optimizer.param_groups[0]["lr"]),
                 "target_pred_counts": pred_counts.astype(int).tolist(),
                 "target_pred_ratios": (pred_counts / target_total).astype(float).tolist(),
@@ -121,21 +120,21 @@ def train_daeac_mcc(
                 "steps": len(epoch_rows),
             }
         )
-        if (epoch + 1) % dev_interval == 0 or epoch + 1 == int(cfg["epochs"]):
-            dev_result = estimate_dev_risk(
-                model,
-                dev_source_loader,
-                dev_val_loader,
-                dev_target_loader,
-                device,
-                dev_cfg,
-                seed=int(config.get("seed", 42)) + epoch,
-            )
-            row.update(dev_result)
-            if row["dev_risk"] < best_dev_risk:
-                best_dev_risk = float(row["dev_risk"])
-                best_dev_epoch = epoch
-                save_daeac_checkpoint(model, config, best_dev_path, epoch, row)
+        source_result = evaluate_daeac_model(model, source_val_loader, device, config["data"]["class_names"])
+        target_logits = _target_logits(model, target_val_loader, device)
+        v_result = ericsson_v_measure(source_result["logits"], source_result["y_true"], target_logits,
+            num_classes=int(config["data"]["num_classes"]), random_state=int(config.get("seed", 42)))
+        row.update(aggregate_v_measure(v_result))
+        save_v_measure_assignments(ckpt_dir / f"{prefix}_latest_v_measure_assignments.npz", v_result)
+        min_delta = float(config.get("validation", {}).get("min_delta", 1e-4))
+        if bool(row["valid"]) and row["v_measure"] > best_dev_risk + min_delta:
+            best_dev_risk = float(row["v_measure"])
+            best_dev_epoch = epoch + 1
+            stale_epochs = 0
+            save_daeac_checkpoint(model, config, best_dev_path, epoch + 1, row)
+            save_v_measure_assignments(ckpt_dir / f"{prefix}_best_v_measure_assignments.npz", v_result)
+        else:
+            stale_epochs += 1
         history.append(row)
         log_row = {
             f"mcc/{k}": v
@@ -146,22 +145,24 @@ def train_daeac_mcc(
             log_row[f"mcc/target_pred_count_{idx}"] = count
             log_row[f"mcc/target_pred_ratio_{idx}"] = row["target_pred_ratios"][idx]
         wandb_run.log(log_row, step=epoch)
-        save_daeac_checkpoint(model, config, latest_path, epoch, row)
+        save_daeac_checkpoint(model, config, latest_path, epoch + 1, row)
         print(
             f"[mcc epoch {epoch + 1}/{cfg['epochs']}] loss={row['loss']:.4f} "
             f"cls={row['loss_cls']:.4f} mcc={row['loss_mcc']:.4f} "
             f"entropy={row['target_entropy']:.4f} target_pred={row['target_pred_counts']} "
             f"target_ratio={[round(v, 4) for v in row['target_pred_ratios']]} "
             f"samples(src/tgt)={source_samples_seen}/{target_samples_seen} "
-            f"dev_risk={row.get('dev_risk', float('nan')):.6f}"
+            f"v_measure={row['v_measure']:.6f}"
         )
+        if epoch + 1 >= int(config.get("validation", {}).get("min_epochs", 10)) and stale_epochs >= int(config.get("validation", {}).get("patience", 5)):
+            break
 
     summary = {
         "latest_checkpoint": str(latest_path),
-        "best_dev_checkpoint": str(best_dev_path),
-        "best_dev_epoch": best_dev_epoch,
-        "best_dev_risk": best_dev_risk,
-        "selection_policy": "minimum_deep_embedded_validation_risk",
+        "best_checkpoint": str(best_dev_path),
+        "best_epoch": best_dev_epoch,
+        "best_v_measure": best_dev_risk,
+        "selection_policy": "maximum_ericsson_v_measure_source_val_plus_target_val_logits",
         "epoch_driver": "target_once",
         "mixed_domain_batchnorm": True,
         "use_class_weights": bool(cfg.get("use_class_weights", True)),
@@ -185,6 +186,16 @@ def _soft_confusion_entries(matrix: torch.Tensor, class_names: list[str]) -> dic
 
 def _batch_x(batch):
     return batch[0] if isinstance(batch, (tuple, list)) else batch
+
+
+@torch.no_grad()
+def _target_logits(model, loader: DataLoader, device: torch.device) -> np.ndarray:
+    values = []
+    model.eval()
+    for batch in loader:
+        _, logits, _ = model(_batch_x(batch).to(device), return_logits=True)
+        values.append(logits.detach().cpu().numpy())
+    return np.concatenate(values)
 
 
 def _cycle(loader: DataLoader):

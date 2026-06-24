@@ -16,13 +16,14 @@ paths:
   output_dir: outputs/phase6_daeac_paper
 
 data:
-  source_train: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
-  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
-  target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
-  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+  source_train: data/processed/phase6_daeac_record_splits/ds1_train.npz
+  source_eval: data/processed/phase6_daeac_record_splits/ds1_val.npz
+  target_unlabeled: data/processed/phase6_daeac_record_splits/ds2_train.npz
+  target_val: data/processed/phase6_daeac_record_splits/ds2_val.npz
+  target_test: data/processed/phase6_daeac_record_splits/ds2_test.npz
   external_targets:
-    incart: data/processed/phase6_daeac_paper/incart_all_daeac.npz
-    svdb: data/processed/phase6_daeac_paper/svdb_all_daeac.npz
+    incart: data/processed/phase6_daeac_record_splits/incart_test.npz
+    svdb: data/processed/phase6_daeac_record_splits/svdb_test.npz
   input_key: auto
   label_key: y
   class_names: ["N", "S", "V", "F"]
@@ -42,7 +43,7 @@ model:
 
 training:
   checkpoint_prefix: daeac_base
-  epochs: 300
+  epochs: 50
   batch_size: 256
   lr: 0.005
   weight_decay: 0.0001
@@ -76,11 +77,11 @@ adaptation:
     V: 0.99
     F: 0.99
   monitoring:
-    protocol: losses_and_pseudo_label_dynamics_only
+    protocol: ericsson_v_measure_source_val_plus_target_val_logits
     stability_window: 10
     stability_min_epoch: 20
     stability_cv_tolerance: 0.05
-    checkpoint_policy: final_epoch
+    checkpoint_policy: maximum_v_measure_with_early_stopping
 
 evaluation:
   batch_size: 256
@@ -99,3 +100,10 @@ evaluation:
         V: 0.93
         S: 0.83
         F: 0.65
+
+validation:
+  method: ericsson_v_measure
+  beta: 1.0
+  min_epochs: 20
+  patience: 10
+  min_delta: 0.0001

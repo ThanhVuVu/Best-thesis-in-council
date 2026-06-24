@@ -35,13 +35,11 @@ def test_domain_pair_protocols_and_unique_outputs() -> None:
             workflow.apply_domain_pair(config, pair, method)
             outputs.add(config["paths"]["output_dir"])
             assert config["domain_pair"] == pair
-            if pair == "ds1_ds2":
-                assert "first5" in config["data"]["target_unlabeled"]
-                assert config["data"]["target_unlabeled"] != config["data"]["target_test"]
-            else:
-                assert config["data"]["target_unlabeled"] == config["data"]["target_test"]
+            assert config["data"]["target_unlabeled"] != config["data"]["target_val"]
+            assert config["data"]["target_val"] != config["data"]["target_test"]
+            assert config["data"]["target_unlabeled"] != config["data"]["target_test"]
             if pair.startswith("mitbih_"):
-                assert "mitdb_all" in config["data"]["source_train"]
+                assert "mitbih_train" in config["data"]["source_train"]
         assert len(outputs) == len(PAIR_NAMES)
 
 

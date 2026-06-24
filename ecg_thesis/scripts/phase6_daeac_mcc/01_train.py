@@ -56,7 +56,7 @@ def main() -> None:
         class_names=class_names,
     )
     dev_target_ds = DAEACTargetUnlabeledDataset(
-        cfg_path(config, "data", "target_test"),
+        cfg_path(config, "data", "target_val"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
@@ -74,21 +74,22 @@ def _apply_domain_pair(config, domain_pair: str | None) -> None:
     if domain_pair is None:
         return
     specs = {
-        "ds1_ds2": ("mitdb_ds1_daeac.npz", "mitdb_ds2_first5_unlabeled_daeac.npz", "mitdb_ds2_daeac.npz", "first5_adapt_full_test", "ds1"),
-        "ds1_incart": ("mitdb_ds1_daeac.npz", "incart_all_daeac.npz", "incart_all_daeac.npz", "full_target_transductive", "ds1"),
-        "ds1_svdb": ("mitdb_ds1_daeac.npz", "svdb_all_daeac.npz", "svdb_all_daeac.npz", "full_target_transductive", "ds1"),
-        "mitbih_incart": ("mitdb_all_daeac.npz", "incart_all_daeac.npz", "incart_all_daeac.npz", "full_target_transductive", "mitbih"),
-        "mitbih_svdb": ("mitdb_all_daeac.npz", "svdb_all_daeac.npz", "svdb_all_daeac.npz", "full_target_transductive", "mitbih"),
+        "ds1_ds2": ("ds1", "ds2", "ds1"),
+        "ds1_incart": ("ds1", "incart", "ds1"),
+        "ds1_svdb": ("ds1", "svdb", "ds1"),
+        "mitbih_incart": ("mitbih", "incart", "mitbih"),
+        "mitbih_svdb": ("mitbih", "svdb", "mitbih"),
     }
-    source, target_adapt, target_test, protocol, source_kind = specs[domain_pair]
-    root = "data/processed/phase6_daeac_paper"
+    source, target, source_kind = specs[domain_pair]
+    root = "data/processed/phase6_daeac_record_splits"
     config["domain_pair"] = domain_pair
     config["data"].update(
-        source_train=f"{root}/{source}",
-        source_eval=f"{root}/{source}",
-        target_unlabeled=f"{root}/{target_adapt}",
-        target_test=f"{root}/{target_test}",
-        target_protocol=protocol,
+        source_train=f"{root}/{source}_train.npz",
+        source_eval=f"{root}/{source}_val.npz",
+        target_unlabeled=f"{root}/{target}_train.npz",
+        target_val=f"{root}/{target}_val.npz",
+        target_test=f"{root}/{target}_test.npz",
+        target_protocol="record_60_20_20",
     )
     config["paths"]["output_dir"] = f"outputs/phase6_daeac_mcc_{domain_pair}"
     config["adaptation"]["checkpoint_prefix"] = f"daeac_mcc_{domain_pair}"

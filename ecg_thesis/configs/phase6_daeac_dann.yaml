@@ -17,13 +17,14 @@ paths:
   checkpoint_backup_dir: null
 
 data:
-  source_train: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
-  source_eval: data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz
-  target_unlabeled: data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz
-  target_test: data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz
+  source_train: data/processed/phase6_daeac_record_splits/ds1_train.npz
+  source_eval: data/processed/phase6_daeac_record_splits/ds1_val.npz
+  target_unlabeled: data/processed/phase6_daeac_record_splits/ds2_train.npz
+  target_val: data/processed/phase6_daeac_record_splits/ds2_val.npz
+  target_test: data/processed/phase6_daeac_record_splits/ds2_test.npz
   external_targets:
-    incart: data/processed/phase6_daeac_paper/incart_all_daeac.npz
-    svdb: data/processed/phase6_daeac_paper/svdb_all_daeac.npz
+    incart: data/processed/phase6_daeac_record_splits/incart_test.npz
+    svdb: data/processed/phase6_daeac_record_splits/svdb_test.npz
   input_key: auto
   label_key: y
   class_names: ["N", "S", "V", "F"]
@@ -46,7 +47,7 @@ model:
 training:
   checkpoint_prefix: daeac_dann
   init_checkpoint: outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt
-  epochs: 300
+  epochs: 50
   source_batch_size: 256
   target_batch_size: 256
   lr: 0.005
@@ -70,3 +71,10 @@ dann:
 
 evaluation:
   batch_size: 256
+
+validation:
+  method: ericsson_v_measure
+  beta: 1.0
+  min_epochs: 10
+  patience: 10
+  min_delta: 0.0001

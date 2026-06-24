@@ -37,7 +37,7 @@ def train_parser(default_config: str) -> argparse.ArgumentParser:
     return parser
 
 
-def prepare_train_run(args, method_section: str) -> tuple[dict[str, Any], Any, Any, Any, Any, Any]:
+def prepare_train_run(args, method_section: str) -> tuple[dict[str, Any], Any, Any, Any, Any, Any, Any]:
     config = load_phase1_config(args.config)
     if method_section == "cdan" and getattr(args, "method", None) is not None:
         config["cdan"]["method"] = str(args.method)
@@ -70,11 +70,15 @@ def prepare_train_run(args, method_section: str) -> tuple[dict[str, Any], Any, A
         label_key=label_key,
         class_names=class_names,
     )
+    target_val_ds = DAEACTargetUnlabeledDataset(
+        cfg_path(config, "data", "target_val"), input_key=input_key, label_key=label_key, class_names=class_names
+    )
     source_ds = subset_first(source_ds, args.max_source_samples)
     val_ds = subset_first(val_ds, args.max_val_samples)
     target_ds = subset_first(target_ds, args.max_target_samples)
+    target_val_ds = subset_first(target_val_ds, args.max_val_samples)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
-    return config, source_ds, val_ds, target_ds, output, device
+    return config, source_ds, val_ds, target_ds, target_val_ds, output, device
 
 
 def apply_domain_pair(config: dict[str, Any], domain_pair: str | None, method: str) -> dict[str, Any]:
@@ -82,40 +86,36 @@ def apply_domain_pair(config: dict[str, Any], domain_pair: str | None, method: s
     if domain_pair is None:
         return config
     pair = str(domain_pair).lower()
+    root = "data/processed/phase6_daeac_record_splits"
     specs = {
         "ds1_ds2": {
-            "source": "data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz",
-            "target_adapt": "data/processed/phase6_daeac_paper/mitdb_ds2_first5_unlabeled_daeac.npz",
-            "target_test": "data/processed/phase6_daeac_paper/mitdb_ds2_daeac.npz",
-            "protocol": "first5_adapt_full_test",
+            "source": f"{root}/ds1_train.npz", "source_val": f"{root}/ds1_val.npz",
+            "target_adapt": f"{root}/ds2_train.npz", "target_val": f"{root}/ds2_val.npz", "target_test": f"{root}/ds2_test.npz",
+            "protocol": "record_60_20_20",
             "checkpoint": "outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt",
         },
         "ds1_incart": {
-            "source": "data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz",
-            "target_adapt": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
-            "target_test": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
-            "protocol": "full_target_transductive",
+            "source": f"{root}/ds1_train.npz", "source_val": f"{root}/ds1_val.npz",
+            "target_adapt": f"{root}/incart_train.npz", "target_val": f"{root}/incart_val.npz", "target_test": f"{root}/incart_test.npz",
+            "protocol": "record_60_20_20",
             "checkpoint": "outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt",
         },
         "ds1_svdb": {
-            "source": "data/processed/phase6_daeac_paper/mitdb_ds1_daeac.npz",
-            "target_adapt": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
-            "target_test": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
-            "protocol": "full_target_transductive",
+            "source": f"{root}/ds1_train.npz", "source_val": f"{root}/ds1_val.npz",
+            "target_adapt": f"{root}/svdb_train.npz", "target_val": f"{root}/svdb_val.npz", "target_test": f"{root}/svdb_test.npz",
+            "protocol": "record_60_20_20",
             "checkpoint": "outputs/phase6_daeac_paper/checkpoints/daeac_base_best.pt",
         },
         "mitbih_incart": {
-            "source": "data/processed/phase6_daeac_paper/mitdb_all_daeac.npz",
-            "target_adapt": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
-            "target_test": "data/processed/phase6_daeac_paper/incart_all_daeac.npz",
-            "protocol": "full_target_transductive",
+            "source": f"{root}/mitbih_train.npz", "source_val": f"{root}/mitbih_val.npz",
+            "target_adapt": f"{root}/incart_train.npz", "target_val": f"{root}/incart_val.npz", "target_test": f"{root}/incart_test.npz",
+            "protocol": "record_60_20_20",
             "checkpoint": "outputs/phase6_daeac_mitbih_base/checkpoints/daeac_base_mitbih_best.pt",
         },
         "mitbih_svdb": {
-            "source": "data/processed/phase6_daeac_paper/mitdb_all_daeac.npz",
-            "target_adapt": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
-            "target_test": "data/processed/phase6_daeac_paper/svdb_all_daeac.npz",
-            "protocol": "full_target_transductive",
+            "source": f"{root}/mitbih_train.npz", "source_val": f"{root}/mitbih_val.npz",
+            "target_adapt": f"{root}/svdb_train.npz", "target_val": f"{root}/svdb_val.npz", "target_test": f"{root}/svdb_test.npz",
+            "protocol": "record_60_20_20",
             "checkpoint": "outputs/phase6_daeac_mitbih_base/checkpoints/daeac_base_mitbih_best.pt",
         },
     }
@@ -124,8 +124,9 @@ def apply_domain_pair(config: dict[str, Any], domain_pair: str | None, method: s
     config["data"].update(
         {
             "source_train": spec["source"],
-            "source_eval": spec["source"],
+            "source_eval": spec["source_val"],
             "target_unlabeled": spec["target_adapt"],
+            "target_val": spec["target_val"],
             "target_test": spec["target_test"],
             "target_protocol": spec["protocol"],
         }
