@@ -392,7 +392,7 @@ def _copy_to_backup(path: str | Path, backup_dir: Path) -> None:
 
 
 def _checkpoint_backup_dir(config: dict[str, Any]) -> Path | None:
-    env_value = os.environ.get("ECG_PHASE2_CHECKPOINT_BACKUP_DIR") or os.environ.get("ECG_PHASE1_CHECKPOINT_BACKUP_DIR")
+    env_value = os.environ.get("ECG_CHECKPOINT_BACKUP_DIR")
     config_value = config.get("paths", {}).get("checkpoint_backup_dir")
     value = env_value or config_value
     if value in (None, "", "null", "None"):
