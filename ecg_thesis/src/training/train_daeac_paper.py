@@ -60,7 +60,12 @@ def train_daeac_base(
     train_loader = DataLoader(train_dataset, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(train_dataset, config, cfg, device)
-    cls_loss_fn = build_daeac_classification_loss(cfg, int(config["data"]["num_classes"]), class_weights).to(device)
+    cls_loss_fn = build_daeac_classification_loss(
+        _classification_loss_config(config, cfg),
+        int(config["data"]["num_classes"]),
+        class_weights,
+        class_counts=_source_class_counts(train_dataset, config),
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
@@ -144,6 +149,12 @@ def adapt_daeac(
     source_val_loader = DataLoader(source_val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     target_val_loader = DataLoader(target_val_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
+    cls_loss_fn = build_daeac_classification_loss(
+        _classification_loss_config(config, cfg),
+        int(config["data"]["num_classes"]),
+        class_weights,
+        class_counts=_source_class_counts(source_dataset, config),
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(cfg["lr"]), weight_decay=float(cfg["weight_decay"]))
     scheduler = torch.optim.lr_scheduler.StepLR(
         optimizer,
@@ -153,8 +164,15 @@ def adapt_daeac(
     distance_fn = distance_from_name(str(cfg.get("distance", "l2")))
     thresholds = _threshold_tensor(config, cfg, device)
     aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
+    reliable_pseudo_enabled = _reliable_pseudo_enabled(config)
+    target_center_min_samples = _reliable_min_samples(config) if reliable_pseudo_enabled else 1
+    reliable_selector = (
+        ReliablePseudoLabelSelector.from_source(model, source_loader, config, device)
+        if reliable_pseudo_enabled
+        else None
+    )
     pseudo_dataset = build_pseudo_labeled_target_dataset(
-        model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
+        model, aux_classifier, target_dataset, target_inference_loader, thresholds, device, selector=reliable_selector
     )
     center_memory = CenterMemory(int(config["data"]["num_classes"]), int(config["model"]["feature_dim"]), device)
     center_memory.source = compute_global_source_centers(model, source_loader, device, center_memory.num_classes)
@@ -163,6 +181,7 @@ def adapt_daeac(
         DataLoader(pseudo_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0),
         device,
         center_memory.num_classes,
+        min_samples_per_class=target_center_min_samples,
     )
     center_memory.refresh_mixed()
     _prepare_center_mkmmd_config(cfg, center_memory)
@@ -212,11 +231,16 @@ def adapt_daeac(
 
             source_output = model(x_s, return_dict=True)
             z_s = source_output["features"]
-            loss_cls = _source_classification_loss(source_output, y_s, class_weights, None, config)
+            loss_cls = _source_classification_loss(source_output, y_s, class_weights, cls_loss_fn, config)
             z_t = model.extract_features(x_t)
 
             local_source = batch_centers(z_s, y_s, center_memory.num_classes)
-            local_target = batch_centers(z_t, selected_pseudo_t, center_memory.num_classes)
+            local_target = batch_centers(
+                z_t,
+                selected_pseudo_t,
+                center_memory.num_classes,
+                min_samples_per_class=target_center_min_samples,
+            )
             source_for_loss, target_for_loss, mixed_for_loss = center_memory.centers_for_loss(
                 local_source,
                 local_target,
@@ -341,8 +365,19 @@ def adapt_daeac(
         if epoch + 1 < int(cfg["epochs"]):
             aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
             try:
+                reliable_selector = (
+                    ReliablePseudoLabelSelector.from_source(model, source_loader, config, device)
+                    if reliable_pseudo_enabled
+                    else None
+                )
                 pseudo_dataset = build_pseudo_labeled_target_dataset(
-                    model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
+                    model,
+                    aux_classifier,
+                    target_dataset,
+                    target_inference_loader,
+                    thresholds,
+                    device,
+                    selector=reliable_selector,
                 )
                 pseudo_snapshot_origin = f"refreshed_after_epoch_{epoch + 1}"
             except RuntimeError as exc:
@@ -482,8 +517,8 @@ def _source_classification_loss(
 ) -> torch.Tensor:
     dual_cfg = dict(config.get("rtd_daeac", {}).get("dual_head", {}))
     if bool(dual_cfg.get("enabled", False)) and "logits_1" in output and "logits_2" in output:
-        loss_1 = weighted_cross_entropy_from_logits(output["logits_1"], labels, class_weights)
-        loss_2 = weighted_cross_entropy_from_logits(output["logits_2"], labels, class_weights)
+        loss_1 = _apply_source_classification_loss(output["logits_1"], labels, class_weights, cls_loss_fn)
+        loss_2 = _apply_source_classification_loss(output["logits_2"], labels, class_weights, cls_loss_fn)
         loss = 0.5 * (loss_1 + loss_2)
         consistency_weight = float(dual_cfg.get("consistency_weight", 0.0))
         if consistency_weight > 0.0:
@@ -494,6 +529,17 @@ def _source_classification_loss(
     if cls_loss_fn is not None:
         return cls_loss_fn(output["logits"], labels)
     return weighted_cross_entropy_from_logits(output["logits"], labels, class_weights)
+
+
+def _apply_source_classification_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    class_weights: torch.Tensor | None,
+    cls_loss_fn: nn.Module | None,
+) -> torch.Tensor:
+    if cls_loss_fn is not None:
+        return cls_loss_fn(logits, labels)
+    return weighted_cross_entropy_from_logits(logits, labels, class_weights)
 
 
 def _prepare_checkpoint_state_dict_for_model(state_dict: dict[str, torch.Tensor], model: DAEACNetwork) -> dict[str, torch.Tensor]:
@@ -552,6 +598,205 @@ class CenterMemory:
         self.mixed = [center.detach() if center is not None else None for center in mixed]
 
 
+class PseudoLabelBank:
+    def __init__(self, target_size: int, num_classes: int):
+        self.target_size = int(target_size)
+        self.num_classes = int(num_classes)
+        self.accepted = torch.zeros(self.target_size, dtype=torch.bool)
+        self.labels = torch.full((self.target_size,), -1, dtype=torch.long)
+        self.confidence = torch.zeros(self.target_size, dtype=torch.float32)
+        self.normalized_entropy = torch.zeros(self.target_size, dtype=torch.float32)
+        self.source_distance = torch.full((self.target_size,), float("inf"), dtype=torch.float32)
+        self.source_distance_threshold = torch.full((self.target_size,), float("nan"), dtype=torch.float32)
+        self.head_discrepancy = torch.full((self.target_size,), float("inf"), dtype=torch.float32)
+        self.head_discrepancy_threshold = torch.full((self.target_size,), float("nan"), dtype=torch.float32)
+        self.confidence_pass = torch.zeros(self.target_size, dtype=torch.bool)
+        self.distance_pass = torch.zeros(self.target_size, dtype=torch.bool)
+        self.discrepancy_pass = torch.zeros(self.target_size, dtype=torch.bool)
+
+    def update(
+        self,
+        indices: torch.Tensor,
+        labels: torch.Tensor,
+        confidence: torch.Tensor,
+        entropy: torch.Tensor,
+        distance: torch.Tensor,
+        distance_threshold: torch.Tensor,
+        discrepancy: torch.Tensor,
+        discrepancy_threshold: torch.Tensor,
+        masks: dict[str, torch.Tensor],
+    ) -> None:
+        idx = torch.as_tensor(indices, dtype=torch.long).cpu()
+        if bool((idx < 0).any()) or bool((idx >= self.target_size).any()):
+            raise IndexError("Pseudo-label bank indices must be within the target dataset.")
+        conf_pass = torch.as_tensor(masks["confidence"], dtype=torch.bool).cpu()
+        dist_pass = torch.as_tensor(masks["distance"], dtype=torch.bool).cpu()
+        disc_pass = torch.as_tensor(masks["discrepancy"], dtype=torch.bool).cpu()
+        accepted = conf_pass & dist_pass & disc_pass
+        self.labels[idx] = torch.as_tensor(labels, dtype=torch.long).cpu()
+        self.confidence[idx] = torch.as_tensor(confidence, dtype=torch.float32).cpu()
+        self.normalized_entropy[idx] = torch.as_tensor(entropy, dtype=torch.float32).cpu()
+        self.source_distance[idx] = torch.as_tensor(distance, dtype=torch.float32).cpu()
+        self.source_distance_threshold[idx] = torch.as_tensor(distance_threshold, dtype=torch.float32).cpu()
+        self.head_discrepancy[idx] = torch.as_tensor(discrepancy, dtype=torch.float32).cpu()
+        self.head_discrepancy_threshold[idx] = torch.as_tensor(discrepancy_threshold, dtype=torch.float32).cpu()
+        self.confidence_pass[idx] = conf_pass
+        self.distance_pass[idx] = dist_pass
+        self.discrepancy_pass[idx] = disc_pass
+        self.accepted[idx] = accepted
+
+    def accepted_positions(self) -> torch.Tensor:
+        return torch.nonzero(self.accepted, as_tuple=False).flatten()
+
+    def to_pseudo_dataset(self, target_dataset: Dataset) -> DAEACPseudoLabeledDataset:
+        positions = self.accepted_positions()
+        return DAEACPseudoLabeledDataset(
+            target_dataset,
+            positions,
+            self.labels[positions],
+            self.confidence[positions],
+            self.normalized_entropy[positions],
+        )
+
+    def diagnostics(self, class_names: list[str]) -> dict[str, Any]:
+        accepted_labels = self.labels[self.accepted]
+        counts = torch.bincount(accepted_labels.clamp_min(0), minlength=self.num_classes).cpu().numpy()
+        selected = int(self.accepted.sum().item())
+        result: dict[str, Any] = {
+            "reliable_confidence_pass_total": int(self.confidence_pass.sum().item()),
+            "reliable_distance_pass_total": int(self.distance_pass.sum().item()),
+            "reliable_discrepancy_pass_total": int(self.discrepancy_pass.sum().item()),
+            "reliable_all_gates_pass_total": selected,
+            "reliable_accepted_total": selected,
+        }
+        for idx, name in enumerate(class_names):
+            count = int(counts[idx]) if idx < len(counts) else 0
+            result[f"reliable_accepted_count_{name}"] = count
+            result[f"reliable_accepted_rate_{name}"] = float(count / max(selected, 1))
+        return result
+
+
+class ReliablePseudoLabelSelector:
+    def __init__(
+        self,
+        source_centers: torch.Tensor,
+        source_radii: torch.Tensor,
+        discrepancy_threshold: torch.Tensor | float,
+        confidence_thresholds: torch.Tensor,
+        class_names: list[str],
+        min_samples_per_class: int = 1,
+    ):
+        self.source_centers = source_centers
+        self.source_radii = source_radii
+        self.discrepancy_threshold = torch.as_tensor(
+            discrepancy_threshold,
+            dtype=source_centers.dtype,
+            device=source_centers.device,
+        )
+        self.confidence_thresholds = confidence_thresholds.to(device=source_centers.device, dtype=source_centers.dtype)
+        self.class_names = list(class_names)
+        self.num_classes = len(self.class_names)
+        self.min_samples_per_class = int(min_samples_per_class)
+
+    @classmethod
+    def from_source(
+        cls,
+        model: DAEACNetwork,
+        source_loader: DataLoader,
+        config: dict[str, Any],
+        device: torch.device,
+    ) -> "ReliablePseudoLabelSelector":
+        if not isinstance(model.classifier, DualClassifierH):
+            raise ValueError("Reliable pseudo-labeling requires rtd_daeac.dual_head.enabled=true.")
+        rtd_cfg = dict(config.get("rtd_daeac", {}).get("reliable_pseudo", {}))
+        if str(rtd_cfg.get("distance_gate_mode", "source_percentile")).lower() != "source_percentile":
+            raise ValueError("Phase 2B supports only distance_gate_mode='source_percentile'.")
+        if str(rtd_cfg.get("discrepancy_gate_mode", "source_percentile")).lower() != "source_percentile":
+            raise ValueError("Phase 2B supports only discrepancy_gate_mode='source_percentile'.")
+        class_names = list(config["data"]["class_names"])
+        num_classes = int(config["data"]["num_classes"])
+        distance_q = float(rtd_cfg.get("distance_percentile", 90.0)) / 100.0
+        discrepancy_q = float(rtd_cfg.get("discrepancy_percentile", 90.0)) / 100.0
+        features_all: list[torch.Tensor] = []
+        labels_all: list[torch.Tensor] = []
+        discrepancies: list[torch.Tensor] = []
+        was_training = model.training
+        model.eval()
+        with torch.no_grad():
+            for x, y in source_loader:
+                output = model(x.to(device), return_dict=True)
+                if "logits_1" not in output or "logits_2" not in output:
+                    raise ValueError("Reliable pseudo-labeling requires dual-head logits.")
+                features_all.append(output["features"].detach())
+                labels_all.append(y.to(device).detach())
+                discrepancies.append(torch.linalg.vector_norm(output["logits_1"] - output["logits_2"], dim=1).detach())
+        if was_training:
+            model.train()
+        if not features_all:
+            raise ValueError("Cannot compute reliable pseudo-label source gates from an empty source loader.")
+        features = torch.cat(features_all, dim=0)
+        labels = torch.cat(labels_all, dim=0)
+        source_centers = torch.zeros(num_classes, features.shape[1], device=device, dtype=features.dtype)
+        source_radii = torch.full((num_classes,), float("inf"), device=device, dtype=features.dtype)
+        for cls_idx in range(num_classes):
+            mask = labels == cls_idx
+            if not bool(mask.any()):
+                continue
+            class_features = features[mask]
+            center = class_features.mean(dim=0)
+            source_centers[cls_idx] = center
+            distances = torch.linalg.vector_norm(class_features - center, dim=1)
+            source_radii[cls_idx] = _safe_quantile(distances, distance_q)
+        discrepancy_threshold = _safe_quantile(torch.cat(discrepancies, dim=0), discrepancy_q)
+        return cls(
+            source_centers=source_centers,
+            source_radii=source_radii,
+            discrepancy_threshold=discrepancy_threshold,
+            confidence_thresholds=_reliable_confidence_thresholds(config, device),
+            class_names=class_names,
+            min_samples_per_class=int(rtd_cfg.get("min_samples_per_class", 1)),
+        )
+
+    def select_batch(
+        self,
+        model: DAEACNetwork,
+        aux_classifier: nn.Module,
+        x: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        if not isinstance(aux_classifier, DualClassifierH):
+            raise ValueError("Reliable pseudo-labeling requires a dual-head auxiliary classifier snapshot.")
+        features = model.extract_features(x.to(self.source_centers.device))
+        logits_1, logits_2 = aux_classifier.forward_head_logits(features)
+        logits = 0.5 * (logits_1 + logits_2)
+        probabilities = torch.softmax(logits, dim=1)
+        confidence, labels = probabilities.max(dim=1)
+        discrepancy = torch.linalg.vector_norm(logits_1 - logits_2, dim=1)
+        centers = self.source_centers[labels]
+        source_distance = torch.linalg.vector_norm(features - centers, dim=1)
+        distance_threshold = self.source_radii[labels]
+        discrepancy_threshold = torch.full_like(discrepancy, float(self.discrepancy_threshold.detach().cpu()))
+        confidence_threshold = self.confidence_thresholds[labels]
+        entropy = -(probabilities * probabilities.clamp_min(torch.finfo(probabilities.dtype).tiny).log()).sum(dim=1)
+        entropy = entropy / np.log(probabilities.shape[1])
+        confidence_pass = confidence >= confidence_threshold
+        distance_pass = source_distance <= distance_threshold
+        discrepancy_pass = discrepancy <= self.discrepancy_threshold
+        return {
+            "labels": labels.detach(),
+            "confidence": confidence.detach(),
+            "entropy": entropy.detach(),
+            "source_distance": source_distance.detach(),
+            "source_distance_threshold": distance_threshold.detach(),
+            "head_discrepancy": discrepancy.detach(),
+            "head_discrepancy_threshold": discrepancy_threshold.detach(),
+            "masks": {
+                "confidence": confidence_pass.detach(),
+                "distance": distance_pass.detach(),
+                "discrepancy": discrepancy_pass.detach(),
+            },
+        }
+
+
 def compute_global_source_centers(
     model: DAEACNetwork,
     loader: DataLoader,
@@ -602,6 +847,7 @@ def compute_global_pseudo_target_centers(
     loader: DataLoader,
     device: torch.device,
     num_classes: int,
+    min_samples_per_class: int = 1,
 ) -> list[torch.Tensor | None]:
     sums = [torch.zeros(model.feature_dim, device=device) for _ in range(num_classes)]
     counts = [0 for _ in range(num_classes)]
@@ -615,18 +861,49 @@ def compute_global_pseudo_target_centers(
                 if bool(mask.any()):
                     sums[cls] += features[mask].sum(dim=0)
                     counts[cls] += int(mask.sum().item())
-    return [sums[cls] / counts[cls] if counts[cls] > 0 else None for cls in range(num_classes)]
+    min_samples = int(min_samples_per_class)
+    return [sums[cls] / counts[cls] if counts[cls] >= min_samples else None for cls in range(num_classes)]
 
 
 def build_pseudo_labeled_target_dataset(
     model: DAEACNetwork,
-    aux_classifier: ClassifierH,
+    aux_classifier: nn.Module,
     target_dataset: Dataset,
     inference_loader: DataLoader,
     thresholds: torch.Tensor,
     device: torch.device,
+    selector: ReliablePseudoLabelSelector | None = None,
 ) -> DAEACPseudoLabeledDataset:
     """Infer all target samples once and return an immutable confident subset."""
+    if selector is not None:
+        bank = PseudoLabelBank(len(target_dataset), selector.num_classes)
+        offset = 0
+        model.eval()
+        aux_classifier.eval()
+        with torch.no_grad():
+            for batch in inference_loader:
+                x = batch[0] if isinstance(batch, (tuple, list)) else batch
+                x = x.to(device)
+                local_positions = torch.arange(offset, offset + len(x), device=device)
+                selected = selector.select_batch(model, aux_classifier, x)
+                bank.update(
+                    local_positions,
+                    selected["labels"],
+                    selected["confidence"],
+                    selected["entropy"],
+                    selected["source_distance"],
+                    selected["source_distance_threshold"],
+                    selected["head_discrepancy"],
+                    selected["head_discrepancy_threshold"],
+                    selected["masks"],
+                )
+                offset += len(x)
+        if int(bank.accepted.sum().item()) == 0:
+            raise RuntimeError("No target samples passed the strict class-specific pseudo-label thresholds.")
+        pseudo_dataset = bank.to_pseudo_dataset(target_dataset)
+        pseudo_dataset.reliable_diagnostics = bank.diagnostics(selector.class_names)
+        return pseudo_dataset
+
     positions: list[torch.Tensor] = []
     labels: list[torch.Tensor] = []
     confidences: list[torch.Tensor] = []
@@ -662,11 +939,18 @@ def build_pseudo_labeled_target_dataset(
     )
 
 
-def batch_centers(features: torch.Tensor, labels: torch.Tensor, num_classes: int) -> list[torch.Tensor | None]:
+def batch_centers(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    num_classes: int,
+    min_samples_per_class: int = 1,
+) -> list[torch.Tensor | None]:
     centers: list[torch.Tensor | None] = []
+    min_samples = int(min_samples_per_class)
     for cls in range(num_classes):
         mask = labels == cls
-        centers.append(features[mask].mean(dim=0) if bool(mask.any()) else None)
+        count = int(mask.sum().item())
+        centers.append(features[mask].mean(dim=0) if count >= min_samples else None)
     return centers
 
 
@@ -683,14 +967,28 @@ def _ema_center(old: torch.Tensor | None, local: torch.Tensor | None, gamma: flo
 def _class_weights(dataset: DAEACDataset | Subset, config: dict[str, Any], cfg: dict[str, Any], device: torch.device) -> torch.Tensor | None:
     if not bool(cfg.get("use_class_weights", True)):
         return None
+    counts = _source_class_counts(dataset, config)
+    if counts is None:
+        return None
+    num_classes = int(config["data"]["num_classes"])
+    weights = counts.sum() / (num_classes * counts)
+    return weights.to(device=device, dtype=torch.float32)
+
+
+def _source_class_counts(dataset: DAEACDataset | Subset, config: dict[str, Any]) -> torch.Tensor | None:
     labels = _dataset_labels(dataset)
     if labels is None:
         return None
     num_classes = int(config["data"]["num_classes"])
     counts = np.bincount(labels.astype(np.int64), minlength=num_classes).astype(np.float32)
-    counts = np.maximum(counts, 1.0)
-    weights = counts.sum() / (num_classes * counts)
-    return torch.as_tensor(weights, dtype=torch.float32, device=device)
+    return torch.as_tensor(np.maximum(counts, 1.0), dtype=torch.float32)
+
+
+def _classification_loss_config(config: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    loss_cfg = dict(cfg)
+    if "losses" in config:
+        loss_cfg["losses"] = dict(config.get("losses", {}))
+    return loss_cfg
 
 
 def _dataset_labels(dataset: DAEACDataset | Subset) -> np.ndarray | None:
@@ -708,6 +1006,31 @@ def _threshold_tensor(config: dict[str, Any], cfg: dict[str, Any], device: torch
     class_names = list(config["data"]["class_names"])
     values = [float(cfg["pseudo_thresholds"][name]) for name in class_names]
     return torch.as_tensor(values, dtype=torch.float32, device=device)
+
+
+def _reliable_pseudo_enabled(config: dict[str, Any]) -> bool:
+    return bool(dict(config.get("rtd_daeac", {}).get("reliable_pseudo", {})).get("enabled", False))
+
+
+def _reliable_min_samples(config: dict[str, Any]) -> int:
+    cfg = dict(config.get("rtd_daeac", {}).get("reliable_pseudo", {}))
+    return int(cfg.get("min_samples_per_class", 1))
+
+
+def _reliable_confidence_thresholds(config: dict[str, Any], device: torch.device) -> torch.Tensor:
+    class_names = list(config["data"]["class_names"])
+    reliable_cfg = dict(config.get("rtd_daeac", {}).get("reliable_pseudo", {}))
+    adaptation_cfg = dict(config.get("adaptation", {}))
+    values_by_class = dict(adaptation_cfg.get("pseudo_thresholds", {}))
+    values_by_class.update(dict(reliable_cfg.get("confidence_thresholds", {})))
+    values = [float(values_by_class[name]) for name in class_names]
+    return torch.as_tensor(values, dtype=torch.float32, device=device)
+
+
+def _safe_quantile(values: torch.Tensor, q: float) -> torch.Tensor:
+    if values.numel() == 0:
+        return torch.as_tensor(float("inf"), dtype=torch.float32, device=values.device)
+    return torch.quantile(values.float(), float(q))
 
 
 def _cluster_align_loss(
@@ -809,6 +1132,9 @@ def _pseudo_snapshot_diagnostics(
         result[f"pseudo_coverage_{name}"] = float(counts[idx] / max(int(target_total), 1))
         result[f"pseudo_mean_confidence_{name}"] = float(class_conf.mean()) if len(class_conf) else 0.0
         result[f"pseudo_mean_entropy_{name}"] = float(class_entropy.mean()) if len(class_entropy) else 0.0
+    reliable_diag = getattr(pseudo_dataset, "reliable_diagnostics", None)
+    if isinstance(reliable_diag, dict):
+        result.update(reliable_diag)
     return result
 
 

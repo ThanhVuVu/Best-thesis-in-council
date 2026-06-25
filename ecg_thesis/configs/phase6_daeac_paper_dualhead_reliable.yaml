@@ -8,7 +8,7 @@ logging:
     run_name: null
     group: phase6_daeac_paper
     mode: null
-    tags: ["phase6", "daeac", "paper_faithful", "dual_head"]
+    tags: ["phase6", "daeac", "paper_faithful", "dual_head", "reliable_pseudo"]
     log_artifacts: false
 
 paths:
@@ -119,7 +119,7 @@ rtd_daeac:
     enabled: true
     consistency_weight: 0.0
   reliable_pseudo:
-    enabled: false
+    enabled: true
     min_samples_per_class: 5
     confidence_thresholds:
       N: 0.999
