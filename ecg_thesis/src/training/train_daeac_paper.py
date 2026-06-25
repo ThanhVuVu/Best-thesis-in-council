@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import inspect
 import time
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,7 @@ def train_daeac_base(
     train_loader = DataLoader(train_dataset, batch_size=int(cfg["batch_size"]), shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=int(cfg["batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(train_dataset, config, cfg, device)
-    cls_loss_fn = build_daeac_classification_loss(
+    cls_loss_fn = _build_source_classification_loss(
         _classification_loss_config(config, cfg),
         int(config["data"]["num_classes"]),
         class_weights,
@@ -149,7 +150,7 @@ def adapt_daeac(
     source_val_loader = DataLoader(source_val_dataset, batch_size=int(cfg["source_batch_size"]), shuffle=False, num_workers=0)
     target_val_loader = DataLoader(target_val_dataset, batch_size=int(cfg["target_batch_size"]), shuffle=False, num_workers=0)
     class_weights = _class_weights(source_dataset, config, cfg, device)
-    cls_loss_fn = build_daeac_classification_loss(
+    cls_loss_fn = _build_source_classification_loss(
         _classification_loss_config(config, cfg),
         int(config["data"]["num_classes"]),
         class_weights,
@@ -540,6 +541,17 @@ def _apply_source_classification_loss(
     if cls_loss_fn is not None:
         return cls_loss_fn(logits, labels)
     return weighted_cross_entropy_from_logits(logits, labels, class_weights)
+
+
+def _build_source_classification_loss(
+    cfg: dict[str, Any],
+    num_classes: int,
+    class_weights: torch.Tensor | None,
+    class_counts: torch.Tensor | None,
+) -> nn.Module:
+    if "class_counts" in inspect.signature(build_daeac_classification_loss).parameters:
+        return build_daeac_classification_loss(cfg, num_classes, class_weights, class_counts=class_counts)
+    return build_daeac_classification_loss(cfg, num_classes, class_weights)
 
 
 def _prepare_checkpoint_state_dict_for_model(state_dict: dict[str, torch.Tensor], model: DAEACNetwork) -> dict[str, torch.Tensor]:
