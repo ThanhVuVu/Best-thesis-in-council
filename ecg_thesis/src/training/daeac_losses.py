@@ -62,6 +62,51 @@ class WeightedCrossEntropyByBatchSize(nn.Module):
         return weighted_sum / labels.numel()
 
 
+class ClassBalancedFocalLoss(nn.Module):
+    def __init__(
+        self,
+        class_counts: torch.Tensor | list[float] | tuple[float, ...],
+        beta: float = 0.9999,
+        gamma: float = 2.35,
+        reduction: str = "mean",
+    ):
+        super().__init__()
+        if reduction not in {"mean", "sum", "none"}:
+            raise ValueError(f"Unsupported class-balanced focal loss reduction: {reduction}")
+        beta = float(beta)
+        if beta < 0.0 or beta >= 1.0:
+            raise ValueError("class_balanced_focal beta must satisfy 0 <= beta < 1.")
+        counts = torch.as_tensor(class_counts, dtype=torch.float32).flatten().clamp_min(1.0)
+        if counts.numel() == 0:
+            raise ValueError("class_balanced_focal requires non-empty class_counts.")
+        effective_weights = (1.0 - beta) / (1.0 - torch.pow(torch.full_like(counts, beta), counts))
+        alpha = effective_weights * (float(counts.numel()) / effective_weights.sum().clamp_min(torch.finfo(counts.dtype).eps))
+        self.gamma = float(gamma)
+        self.reduction = str(reduction)
+        self.register_buffer("alpha", alpha)
+
+    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        if logits.ndim != 2:
+            raise ValueError(f"Class-balanced focal loss expects logits shaped [B, C], got {tuple(logits.shape)}.")
+        if labels.ndim != 1:
+            raise ValueError(f"Class-balanced focal loss expects labels shaped [B], got {tuple(labels.shape)}.")
+        if self.alpha.numel() != logits.size(1):
+            raise ValueError(
+                f"class_counts length must match num_classes={logits.size(1)}, got {self.alpha.numel()}."
+            )
+        if labels.numel() == 0:
+            return logits.sum() * 0.0
+        ce_loss = F.cross_entropy(logits, labels, reduction="none")
+        pt = torch.exp(-ce_loss)
+        alpha_t = self.alpha.to(device=logits.device, dtype=logits.dtype)[labels]
+        loss = alpha_t * ((1.0 - pt) ** self.gamma) * ce_loss
+        if self.reduction == "mean":
+            return loss.mean()
+        if self.reduction == "sum":
+            return loss.sum()
+        return loss
+
+
 def weighted_cross_entropy_from_logits(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -76,8 +121,10 @@ def build_daeac_classification_loss(
     cfg: dict[str, Any],
     num_classes: int,
     class_weights: torch.Tensor | None = None,
+    class_counts: torch.Tensor | list[float] | tuple[float, ...] | None = None,
 ) -> nn.Module:
-    source_loss = str(cfg.get("source_loss", "weighted_ce")).lower()
+    losses_cfg = dict(cfg.get("losses", {}))
+    source_loss = str(losses_cfg.get("source_cls_loss", cfg.get("source_loss", "weighted_ce"))).lower()
     if source_loss == "weighted_ce":
         return WeightedCrossEntropyByBatchSize(class_weights)
     if source_loss == "focal":
@@ -86,6 +133,15 @@ def build_daeac_classification_loss(
         if alpha is not None and int(alpha.numel()) != int(num_classes):
             raise ValueError(f"focal_alpha length must match num_classes={num_classes}, got {int(alpha.numel())}.")
         return CustomFocalLoss(alpha=alpha, gamma=float(cfg.get("focal_gamma", 2.0)))
+    if source_loss == "class_balanced_focal":
+        if class_counts is None:
+            raise ValueError("class_balanced_focal requires source class_counts.")
+        cb_cfg = dict(losses_cfg.get("class_balanced_focal", cfg.get("class_balanced_focal", {})))
+        return ClassBalancedFocalLoss(
+            class_counts,
+            beta=float(cb_cfg.get("beta", 0.9999)),
+            gamma=float(cb_cfg.get("gamma", 2.35)),
+        )
     raise ValueError(f"Unsupported DAEAC source_loss: {source_loss}")
 
 

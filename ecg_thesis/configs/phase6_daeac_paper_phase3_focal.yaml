@@ -1,0 +1,34 @@
+extends: phase6_daeac_paper.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_paper_phase3_focal
+    tags: ["phase6", "daeac", "rtd_phase3", "class_balanced_focal"]
+
+paths:
+  output_dir: outputs/phase6_daeac_paper_phase3_focal
+
+training:
+  checkpoint_prefix: daeac_base_phase3_focal
+
+adaptation:
+  checkpoint_prefix: daeac_phase3_focal
+  init_checkpoint: outputs/phase6_daeac_paper_phase3_focal/checkpoints/daeac_base_phase3_focal_best.pt
+
+losses:
+  source_cls_loss: class_balanced_focal
+  class_balanced_focal:
+    beta: 0.9999
+    gamma: 2.35
+
+rtd_daeac:
+  enabled: false
+  dual_head:
+    enabled: false
+    consistency_weight: 0.0
+  reliable_pseudo:
+    enabled: false
+  dynamic_weight:
+    enabled: false
+  task_align:
+    enabled: false
