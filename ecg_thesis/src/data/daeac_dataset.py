@@ -26,6 +26,7 @@ class DAEACDataset(Dataset):
         return_index: bool = False,
         return_metadata: bool = False,
         class_names: list[str] | None = None,
+        rr_mode: str = "real",
     ):
         self.path = Path(npz_path)
         requested_input_key = str(input_key)
@@ -34,14 +35,15 @@ class DAEACDataset(Dataset):
         self.return_index = bool(return_index)
         self.return_metadata = bool(return_metadata)
         self.class_names = list(class_names or PAPER_CLASS_NAMES)
+        self.rr_mode = _validate_rr_mode(rr_mode)
 
         self.data = np.load(self.path, allow_pickle=True)
         self.input_key = _resolve_input_key(self.data, self.path, requested_input_key)
         self.x = _normalize_input_array(self.data[self.input_key].astype(np.float32), self.path, self.input_key)
 
-        # Ablation mode: neutralize RR feature rows (index 1 and 2) to 1.0 (neutral ratio)
-        self.x[:, 0, 1, :] = 1.0
-        self.x[:, 0, 2, :] = 1.0
+        if self.rr_mode == "neutralized_legacy":
+            self.x[:, 0, 1, :] = 1.0
+            self.x[:, 0, 2, :] = 1.0
 
         _validate_input_shape(self.x, self.path, self.input_key)
 
@@ -115,6 +117,7 @@ class DAEACTargetUnlabeledDataset(DAEACDataset):
         label_key: str = "y",
         return_index: bool = True,
         class_names: list[str] | None = None,
+        rr_mode: str = "real",
     ):
         super().__init__(
             npz_path,
@@ -124,6 +127,7 @@ class DAEACTargetUnlabeledDataset(DAEACDataset):
             return_index=return_index,
             return_metadata=False,
             class_names=class_names,
+            rr_mode=rr_mode,
         )
 
 
@@ -142,8 +146,9 @@ def load_daeac_source_fit_val(
     class_names: list[str] | None = None,
     split_same_path: bool = True,
     full_source_fit: bool = True,
+    rr_mode: str = "real",
 ) -> tuple[Dataset, Dataset, dict[str, Any]]:
-    source_ds = DAEACDataset(source_path, input_key=input_key, label_key=label_key, class_names=class_names)
+    source_ds = DAEACDataset(source_path, input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
     same_path = Path(source_path).resolve() == Path(eval_path).resolve()
     if same_path and split_same_path:
         fit_ds, val_ds, split_summary = split_daeac_source_fit_val(source_ds)
@@ -170,7 +175,7 @@ def load_daeac_source_fit_val(
         }
         return fit_ds, val_ds, summary
 
-    val_ds = DAEACDataset(eval_path, input_key=input_key, label_key=label_key, class_names=class_names)
+    val_ds = DAEACDataset(eval_path, input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
     summary = {
         "source_path": str(source_path),
         "eval_path": str(eval_path),
@@ -272,6 +277,7 @@ def inspect_daeac_npz(
     label_key: str = "y",
     class_names: list[str] | None = None,
     require_labels: bool = True,
+    rr_mode: str = "real",
 ) -> dict[str, Any]:
     ds = DAEACDataset(
         npz_path,
@@ -279,19 +285,56 @@ def inspect_daeac_npz(
         label_key=label_key,
         require_labels=require_labels,
         class_names=class_names,
+        rr_mode=rr_mode,
     )
     counts = class_counts_from_dataset(ds, len(ds.class_names)).astype(int).tolist()
     records = ds.records
-    return {
+    row_stats = daeac_row_stats(ds.x)
+    summary = {
         "path": str(ds.path),
         "input_key": ds.input_key,
         "shape": list(ds.x.shape),
+        "rr_mode": ds.rr_mode,
+        "row_stats": row_stats,
+        "rr_rows_neutralized": rr_rows_neutralized(row_stats),
         "has_labels": ds.y is not None,
         "class_names": ds.class_names,
         "class_counts": {name: counts[idx] for idx, name in enumerate(ds.class_names)},
         "num_records": int(len(set(records.astype(str)))) if records is not None else None,
         "num_samples": int(len(ds)),
     }
+    ds.close()
+    return summary
+
+
+def daeac_row_stats(x: np.ndarray) -> dict[str, dict[str, float]]:
+    _validate_input_shape(x, Path("<array>"), "x")
+    names = ("row0_morphology", "row1_pre_rr_ratio", "row2_near_pre_rr_ratio")
+    stats: dict[str, dict[str, float]] = {}
+    for idx, name in enumerate(names):
+        values = np.asarray(x[:, 0, idx, :], dtype=np.float32)
+        stats[name] = {
+            "mean": float(values.mean()),
+            "std": float(values.std()),
+            "min": float(values.min()),
+            "max": float(values.max()),
+        }
+    return stats
+
+
+def rr_rows_neutralized(row_stats: dict[str, dict[str, float]], eps: float = 1e-6) -> bool:
+    for name in ("row1_pre_rr_ratio", "row2_near_pre_rr_ratio"):
+        stats = row_stats[name]
+        if abs(float(stats["min"]) - 1.0) > eps or abs(float(stats["max"]) - 1.0) > eps:
+            return False
+    return True
+
+
+def _validate_rr_mode(rr_mode: str) -> str:
+    value = str(rr_mode).lower()
+    if value not in {"real", "neutralized_legacy"}:
+        raise ValueError(f"Unsupported DAEAC rr_mode={rr_mode!r}; expected 'real' or 'neutralized_legacy'.")
+    return value
 
 
 def _resolve_input_key(data: np.lib.npyio.NpzFile, path: Path, requested: str) -> str:

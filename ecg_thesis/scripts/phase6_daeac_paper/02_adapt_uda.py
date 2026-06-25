@@ -34,21 +34,24 @@ def main() -> None:
     device = device_from_torch()
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
+    rr_mode = str(config["data"].get("rr_mode", "real"))
     class_names = list(config["data"]["class_names"])
     source_ds = DAEACDataset(
         cfg_path(config, "data", "source_train"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        rr_mode=rr_mode,
     )
-    source_val_ds = DAEACDataset(cfg_path(config, "data", "source_eval"), input_key=input_key, label_key=label_key, class_names=class_names)
+    source_val_ds = DAEACDataset(cfg_path(config, "data", "source_eval"), input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
     target_ds = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        rr_mode=rr_mode,
     )
-    target_val_ds = DAEACTargetUnlabeledDataset(cfg_path(config, "data", "target_val"), input_key=input_key, label_key=label_key, class_names=class_names)
+    target_val_ds = DAEACTargetUnlabeledDataset(cfg_path(config, "data", "target_val"), input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
     source_ds = subset_first(source_ds, args.max_source_samples)
     target_ds = subset_first(target_ds, args.max_target_samples)
     source_val_ds = subset_first(source_val_ds, args.max_val_samples)

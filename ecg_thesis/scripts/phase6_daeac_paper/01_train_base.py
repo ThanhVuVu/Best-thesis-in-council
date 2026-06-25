@@ -34,6 +34,7 @@ def main() -> None:
     device = device_from_torch()
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
+    rr_mode = str(config["data"].get("rr_mode", "real"))
     class_names = list(config["data"]["class_names"])
     train_ds, val_ds, split_summary = load_daeac_source_fit_val(
         cfg_path(config, "data", "source_train"),
@@ -41,6 +42,7 @@ def main() -> None:
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        rr_mode=rr_mode,
         full_source_fit=str(config["data"].get("source_usage", "full")).lower() == "full",
     )
     print(f"DAEAC source fit/validation split: {split_summary}")
