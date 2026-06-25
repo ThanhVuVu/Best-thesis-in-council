@@ -122,14 +122,14 @@ rtd_daeac:
     enabled: true
     min_samples_per_class: 5
     confidence_thresholds:
-      N: 0.999
+      N: 0.995
       S: 0.99
       V: 0.99
       F: 0.99
     distance_gate_mode: source_percentile
-    distance_percentile: 90
+    distance_percentile: 95
     discrepancy_gate_mode: source_percentile
-    discrepancy_percentile: 90
+    discrepancy_percentile: 95
   class_balanced_source:
     enabled: false
     loss: weighted_ce
