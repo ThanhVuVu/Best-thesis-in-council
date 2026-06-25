@@ -9,10 +9,11 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.data.daeac_dataset import DAEACDataset, DAEACPseudoLabeledDataset, DAEACTargetUnlabeledDataset
-from src.models.daeac_paper import ClassifierH, DAEACNetwork
+from src.models.daeac_paper import ClassifierH, DAEACNetwork, DualClassifierH
 from src.training.daeac_losses import (
     build_daeac_classification_loss,
     cluster_aligning_loss,
@@ -30,6 +31,7 @@ from src.utils.wandb_logging import init_wandb
 
 def build_daeac_model(config: dict[str, Any], device: torch.device) -> DAEACNetwork:
     model_cfg = config["model"]
+    dual_head_cfg = dict(config.get("rtd_daeac", {}).get("dual_head", {}))
     return DAEACNetwork(
         num_classes=int(model_cfg["num_classes"]),
         input_channels=int(model_cfg.get("input_channels", 1)),
@@ -39,6 +41,7 @@ def build_daeac_model(config: dict[str, Any], device: torch.device) -> DAEACNetw
         se_reduction=int(model_cfg.get("se_reduction", 16)),
         dropout=float(model_cfg.get("dropout", 0.0)),
         adaptation_fc=bool(dict(model_cfg.get("adaptation_fc", {})).get("enabled", False)),
+        dual_head=bool(dual_head_cfg.get("enabled", False)),
     ).to(device)
 
 
@@ -78,8 +81,8 @@ def train_daeac_base(
         for x, y in train_loader:
             x = x.to(device)
             y = y.to(device)
-            _, logits, _ = model(x, return_logits=True)
-            loss = cls_loss_fn(logits, y)
+            output = model(x, return_dict=True)
+            loss = _source_classification_loss(output, y, class_weights, cls_loss_fn, config)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -149,13 +152,7 @@ def adapt_daeac(
     )
     distance_fn = distance_from_name(str(cfg.get("distance", "l2")))
     thresholds = _threshold_tensor(config, cfg, device)
-    aux_classifier = ClassifierH(
-        feature_dim=int(config["model"]["feature_dim"]),
-        num_classes=int(config["data"]["num_classes"]),
-        dropout=float(config["model"].get("dropout", 0.0)),
-    ).to(device)
-    aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
-    aux_classifier.eval()
+    aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
     pseudo_dataset = build_pseudo_labeled_target_dataset(
         model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
     )
@@ -213,8 +210,9 @@ def adapt_daeac(
             x_t = x_t.to(device)
             selected_pseudo_t = pseudo_t.to(device)
 
-            z_s, logits_s, _ = model(x_s, return_logits=True)
-            loss_cls = weighted_cross_entropy_from_logits(logits_s, y_s, class_weights)
+            source_output = model(x_s, return_dict=True)
+            z_s = source_output["features"]
+            loss_cls = _source_classification_loss(source_output, y_s, class_weights, None, config)
             z_t = model.extract_features(x_t)
 
             local_source = batch_centers(z_s, y_s, center_memory.num_classes)
@@ -341,8 +339,7 @@ def adapt_daeac(
         # Epoch boundary: synchronize h <- H, then freeze a complete target
         # pseudo-label snapshot only when another epoch will consume it.
         if epoch + 1 < int(cfg["epochs"]):
-            aux_classifier.load_state_dict(copy.deepcopy(model.classifier.state_dict()))
-            aux_classifier.eval()
+            aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
             try:
                 pseudo_dataset = build_pseudo_labeled_target_dataset(
                     model, aux_classifier, target_dataset, target_inference_loader, thresholds, device
@@ -463,7 +460,8 @@ def load_daeac_checkpoint(
 ) -> DAEACNetwork:
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model = model or build_daeac_model(config, device)
-    incompatible = model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    state_dict = _prepare_checkpoint_state_dict_for_model(checkpoint["model_state_dict"], model)
+    incompatible = model.load_state_dict(state_dict, strict=False)
     allowed_missing = {"adaptation_fc.weight", "adaptation_fc.bias"} if model.adaptation_fc_enabled else set()
     unexpected_missing = set(incompatible.missing_keys) - allowed_missing
     if unexpected_missing or incompatible.unexpected_keys:
@@ -473,6 +471,42 @@ def load_daeac_checkpoint(
         )
     model.to(device)
     return model
+
+
+def _source_classification_loss(
+    output: dict[str, torch.Tensor],
+    labels: torch.Tensor,
+    class_weights: torch.Tensor | None,
+    cls_loss_fn: nn.Module | None,
+    config: dict[str, Any],
+) -> torch.Tensor:
+    dual_cfg = dict(config.get("rtd_daeac", {}).get("dual_head", {}))
+    if bool(dual_cfg.get("enabled", False)) and "logits_1" in output and "logits_2" in output:
+        loss_1 = weighted_cross_entropy_from_logits(output["logits_1"], labels, class_weights)
+        loss_2 = weighted_cross_entropy_from_logits(output["logits_2"], labels, class_weights)
+        loss = 0.5 * (loss_1 + loss_2)
+        consistency_weight = float(dual_cfg.get("consistency_weight", 0.0))
+        if consistency_weight > 0.0:
+            probs_1 = torch.softmax(output["logits_1"], dim=1)
+            probs_2 = torch.softmax(output["logits_2"], dim=1)
+            loss = loss + consistency_weight * F.mse_loss(probs_1, probs_2)
+        return loss
+    if cls_loss_fn is not None:
+        return cls_loss_fn(output["logits"], labels)
+    return weighted_cross_entropy_from_logits(output["logits"], labels, class_weights)
+
+
+def _prepare_checkpoint_state_dict_for_model(state_dict: dict[str, torch.Tensor], model: DAEACNetwork) -> dict[str, torch.Tensor]:
+    prepared = dict(state_dict)
+    if isinstance(model.classifier, DualClassifierH):
+        copies = {
+            "classifier.fc2.weight": "classifier.fc.weight",
+            "classifier.fc2.bias": "classifier.fc.bias",
+        }
+        for missing_key, source_key in copies.items():
+            if missing_key not in prepared and source_key in prepared:
+                prepared[missing_key] = prepared[source_key].clone()
+    return prepared
 
 
 class CenterMemory:

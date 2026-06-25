@@ -171,6 +171,26 @@ class ClassifierH(nn.Module):
         return probs
 
 
+class DualClassifierH(nn.Module):
+    def __init__(self, feature_dim: int = 256, num_classes: int = 4, dropout: float = 0.0):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.fc = nn.Linear(feature_dim, num_classes)
+        self.fc2 = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, features: torch.Tensor, return_logits: bool = False):
+        logits_1, logits_2 = self.forward_head_logits(features)
+        logits = 0.5 * (logits_1 + logits_2)
+        probs = torch.softmax(logits, dim=1)
+        if return_logits:
+            return logits, probs
+        return probs
+
+    def forward_head_logits(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        dropped = self.dropout(features)
+        return self.fc(dropped), self.fc2(dropped)
+
+
 class DAEACNetwork(nn.Module):
     def __init__(
         self,
@@ -182,6 +202,7 @@ class DAEACNetwork(nn.Module):
         se_reduction: int = 16,
         dropout: float = 0.0,
         adaptation_fc: bool = False,
+        dual_head: bool = False,
     ):
         super().__init__()
         self.feature_extractor = DAEACFeatureExtractor(
@@ -191,9 +212,11 @@ class DAEACNetwork(nn.Module):
             dilations=dilations,
             se_reduction=se_reduction,
         )
-        self.classifier = ClassifierH(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
+        classifier_cls = DualClassifierH if dual_head else ClassifierH
+        self.classifier = classifier_cls(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
         self.adaptation_fc = nn.Linear(feature_dim, feature_dim) if adaptation_fc else nn.Identity()
         self.adaptation_fc_enabled = bool(adaptation_fc)
+        self.dual_head_enabled = bool(dual_head)
         self.feature_dim = int(feature_dim)
         self.num_classes = int(num_classes)
         self.apply(self._init_weights)
@@ -211,7 +234,32 @@ class DAEACNetwork(nn.Module):
         layers["gap_embed"] = layers["dan_fc"]
         return layers
 
-    def forward(self, x: torch.Tensor, return_logits: bool = False):
+    def forward(self, x: torch.Tensor, return_logits: bool = False, return_dict: bool = False):
+        if return_dict:
+            layers = self.extract_feature_layers(x)
+            features = layers["gap_embed"]
+            if isinstance(self.classifier, DualClassifierH):
+                logits_1, logits_2 = self.classifier.forward_head_logits(features)
+                logits = 0.5 * (logits_1 + logits_2)
+                probs = torch.softmax(logits, dim=1)
+                return {
+                    "features": features,
+                    "logits": logits,
+                    "probabilities": probs,
+                    "feature_layers": layers,
+                    "logits_1": logits_1,
+                    "logits_2": logits_2,
+                    "probabilities_1": torch.softmax(logits_1, dim=1),
+                    "probabilities_2": torch.softmax(logits_2, dim=1),
+                }
+            logits, probs = self.classifier(features, return_logits=True)
+            output = {
+                "features": features,
+                "logits": logits,
+                "probabilities": probs,
+                "feature_layers": layers,
+            }
+            return output
         features = self.extract_features(x)
         logits, probs = self.classifier(features, return_logits=True)
         if return_logits:
