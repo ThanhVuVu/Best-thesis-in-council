@@ -1,0 +1,22 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_ds1_os_noweight
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "ds1_oversampled", "no_class_weight"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_ds1_os_noweight
+
+data:
+  source_train: data/processed/phase6_daeac_record_splits_nsv/ds1_train_oversampled.npz
+  source_eval: data/processed/phase6_daeac_record_splits_nsv/ds1_val.npz
+
+training:
+  checkpoint_prefix: daeac_fcba_rr_nsv_ds1_os_noweight_base
+  use_class_weights: false
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_ds1_os_noweight_uda
+  init_checkpoint: outputs/phase6_daeac_fcba_latefusion_rr_nsv_ds1_os_noweight/checkpoints/daeac_fcba_rr_nsv_ds1_os_noweight_base_best.pt
+  use_class_weights: false
