@@ -38,14 +38,15 @@ class RecordSplitTests(unittest.TestCase):
                 config_json=np.asarray("{}", dtype=object),
             )
 
-            removed = module._drop_classes(path, ["F"])
+            removed = module._drop_classes(path, ["F"], output_class_names=["N", "S", "V"])
 
             self.assertEqual(removed, 2)
             with np.load(path, allow_pickle=True) as data:
                 self.assertEqual(data["y"].tolist(), [0, 1, 2])
                 self.assertEqual(data["record"].tolist(), ["a", "c", "e"])
-                self.assertEqual(data["class_names"].tolist(), ["N", "S", "V", "F"])
-                self.assertEqual(str(data["config_json"].tolist()), "{}")
+                self.assertEqual(data["class_names"].tolist(), ["N", "S", "V"])
+                self.assertEqual(str(data["class_to_id_json"].tolist()), '{"N": 0, "S": 1, "V": 2}')
+                self.assertIn('"class_names": ["N", "S", "V"]', str(data["config_json"].tolist()))
 
 
 def _load_prepare_bundle_module():
