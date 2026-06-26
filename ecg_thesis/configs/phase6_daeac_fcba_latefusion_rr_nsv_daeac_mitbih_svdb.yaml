@@ -1,0 +1,25 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_mitbih_sqrtw.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_daeac_mitbih_svdb
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "daeac", "mitbih_svdb"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_daeac_mitbih_svdb
+
+data:
+  target_unlabeled: data/processed/phase6_daeac_record_splits_nsv/svdb_train.npz
+  target_val: data/processed/phase6_daeac_record_splits_nsv/svdb_val.npz
+  target_test: data/processed/phase6_daeac_record_splits_nsv/svdb_test.npz
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_daeac_mitbih_svdb
+  init_checkpoint: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mitbih_sqrtw/checkpoints/daeac_fcba_rr_nsv_mitbih_sqrtw_base_best.pt
+
+rtd_daeac:
+  enabled: false
+  dual_head:
+    enabled: false
+  reliable_pseudo:
+    enabled: false

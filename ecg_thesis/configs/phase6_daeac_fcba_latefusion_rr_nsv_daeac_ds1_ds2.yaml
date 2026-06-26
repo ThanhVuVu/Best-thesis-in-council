@@ -1,0 +1,24 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_daeac_ds1_ds2
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "daeac", "ds1_ds2"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_daeac_ds1_ds2
+
+training:
+  class_weight_mode: sqrt
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_daeac_ds1_ds2
+  init_checkpoint: outputs/phase6_daeac_fcba_latefusion_rr_nsv_sqrtw/checkpoints/daeac_fcba_rr_nsv_sqrtw_base_best.pt
+  class_weight_mode: sqrt
+
+rtd_daeac:
+  enabled: false
+  dual_head:
+    enabled: false
+  reliable_pseudo:
+    enabled: false

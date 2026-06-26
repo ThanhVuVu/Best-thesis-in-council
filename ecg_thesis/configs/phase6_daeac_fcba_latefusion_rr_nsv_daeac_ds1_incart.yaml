@@ -1,0 +1,29 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_daeac_ds1_incart
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "daeac", "ds1_incart"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_daeac_ds1_incart
+
+data:
+  target_unlabeled: data/processed/phase6_daeac_record_splits_nsv/incart_train.npz
+  target_val: data/processed/phase6_daeac_record_splits_nsv/incart_val.npz
+  target_test: data/processed/phase6_daeac_record_splits_nsv/incart_test.npz
+
+training:
+  class_weight_mode: sqrt
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_daeac_ds1_incart
+  init_checkpoint: outputs/phase6_daeac_fcba_latefusion_rr_nsv_sqrtw/checkpoints/daeac_fcba_rr_nsv_sqrtw_base_best.pt
+  class_weight_mode: sqrt
+
+rtd_daeac:
+  enabled: false
+  dual_head:
+    enabled: false
+  reliable_pseudo:
+    enabled: false

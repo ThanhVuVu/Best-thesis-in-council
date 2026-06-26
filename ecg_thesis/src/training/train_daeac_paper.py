@@ -185,7 +185,7 @@ def adapt_daeac(
     pseudo_dataset = build_pseudo_labeled_target_dataset(
         model, aux_classifier, target_dataset, target_inference_loader, thresholds, device, selector=reliable_selector
     )
-    center_memory = CenterMemory(int(config["data"]["num_classes"]), int(config["model"]["feature_dim"]), device)
+    center_memory = CenterMemory(int(config["data"]["num_classes"]), int(model.feature_dim), device)
     center_memory.source = compute_global_source_centers(model, source_loader, device, center_memory.num_classes)
     center_memory.target = compute_global_pseudo_target_centers(
         model,
