@@ -20,6 +20,7 @@ def main() -> None:
     label_key = str(config["data"].get("label_key", "y"))
     rr_mode = str(config["data"].get("rr_mode", "real"))
     class_names = list(config["data"]["class_names"])
+    num_classes = int(config["data"]["num_classes"])
     dataset_kwargs = _daeac_dataset_kwargs(config)
 
     model = build_daeac_model(config, torch.device("cpu"))
@@ -28,10 +29,13 @@ def main() -> None:
     rr_arg = rr_features if bool(dict(config.get("model", {}).get("late_fusion", {})).get("enabled", False)) else None
     features, logits, probs = model(torch.zeros(2, 1, input_rows, 128), rr_features=rr_arg, return_logits=True)
     assert features.shape[0] == 2, features.shape
-    assert tuple(logits.shape) == (2, 4), logits.shape
-    assert tuple(probs.shape) == (2, 4), probs.shape
+    assert tuple(logits.shape) == (2, num_classes), logits.shape
+    assert tuple(probs.shape) == (2, num_classes), probs.shape
     assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-6)
-    print(f"DAEAC model forward OK: features={tuple(features.shape)}, logits=(2,4), probs=(2,4)")
+    print(
+        f"DAEAC model forward OK: features={tuple(features.shape)}, "
+        f"logits=(2,{num_classes}), probs=(2,{num_classes})"
+    )
 
     for key, require_labels in (
         ("source_train", True),
