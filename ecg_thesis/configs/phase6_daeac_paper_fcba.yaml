@@ -48,7 +48,7 @@ model:
 
 training:
   checkpoint_prefix: daeac_fcba_base
-  epochs: 50
+  epochs: 300
   batch_size: 256
   lr: 0.005
   weight_decay: 0.0001
