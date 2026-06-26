@@ -1017,6 +1017,22 @@ def _class_weights(dataset: DAEACDataset | Subset, config: dict[str, Any], cfg: 
         return None
     num_classes = int(config["data"]["num_classes"])
     weights = counts.sum() / (num_classes * counts)
+    mode = str(cfg.get("class_weight_mode", "inverse")).lower()
+    if mode in {"inverse", "balanced"}:
+        pass
+    elif mode in {"sqrt", "sqrt_inverse", "sqrt_balanced"}:
+        weights = torch.sqrt(weights)
+    else:
+        raise ValueError(f"Unsupported class_weight_mode: {mode}")
+    if cfg.get("class_weight_cap") is not None:
+        weights = torch.clamp(weights, max=float(cfg["class_weight_cap"]))
+    scales = dict(cfg.get("class_weight_scales", {}))
+    if scales:
+        class_names = list(config["data"]["class_names"])
+        for name, scale in scales.items():
+            if str(name) not in class_names:
+                raise ValueError(f"Unknown class in class_weight_scales: {name}")
+            weights[class_names.index(str(name))] *= float(scale)
     return weights.to(device=device, dtype=torch.float32)
 
 
