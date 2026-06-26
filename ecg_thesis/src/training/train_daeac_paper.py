@@ -33,6 +33,7 @@ from src.utils.wandb_logging import init_wandb
 def build_daeac_model(config: dict[str, Any], device: torch.device) -> DAEACNetwork:
     model_cfg = config["model"]
     dual_head_cfg = dict(config.get("rtd_daeac", {}).get("dual_head", {}))
+    fcba_cfg = dict(model_cfg.get("fcba", {}))
     return DAEACNetwork(
         num_classes=int(model_cfg["num_classes"]),
         input_channels=int(model_cfg.get("input_channels", 1)),
@@ -43,6 +44,10 @@ def build_daeac_model(config: dict[str, Any], device: torch.device) -> DAEACNetw
         dropout=float(model_cfg.get("dropout", 0.0)),
         adaptation_fc=bool(dict(model_cfg.get("adaptation_fc", {})).get("enabled", False)),
         dual_head=bool(dual_head_cfg.get("enabled", False)),
+        attention_type=str(model_cfg.get("attention", "se")),
+        fcba_frequency_modes=int(fcba_cfg.get("frequency_modes", 4)),
+        fcba_spatial_kernel_size=int(fcba_cfg.get("spatial_kernel_size", 7)),
+        fcba_reduction=int(fcba_cfg["reduction"]) if "reduction" in fcba_cfg else None,
     ).to(device)
 
 

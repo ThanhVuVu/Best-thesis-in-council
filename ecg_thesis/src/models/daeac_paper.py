@@ -44,6 +44,75 @@ class SELayer2D(nn.Module):
         return x * scale.expand_as(x)
 
 
+class FrequencyConvolutionBlockAttention2D(nn.Module):
+    """FCBA attention adapted to DAEAC's [B, C, 1, T] feature maps."""
+
+    def __init__(
+        self,
+        channels: int,
+        reduction: int = 16,
+        frequency_modes: int = 4,
+        spatial_kernel_size: int = 7,
+    ):
+        super().__init__()
+        if frequency_modes <= 0:
+            raise ValueError("frequency_modes must be positive.")
+        if spatial_kernel_size <= 0 or spatial_kernel_size % 2 == 0:
+            raise ValueError("spatial_kernel_size must be a positive odd integer.")
+        hidden_channels = max(channels // reduction, 1)
+        hidden_frequency = max(frequency_modes // reduction, 1)
+        self.frequency_modes = int(frequency_modes)
+        self.frequency_mlp = nn.Sequential(
+            nn.Linear(self.frequency_modes, hidden_frequency, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_frequency, 1, bias=False),
+            nn.Sigmoid(),
+        )
+        self.channel_mlp = nn.Sequential(
+            nn.Linear(channels, hidden_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_channels, channels, bias=False),
+        )
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.spatial = nn.Conv2d(
+            2,
+            1,
+            kernel_size=(1, spatial_kernel_size),
+            padding=(0, spatial_kernel_size // 2),
+            bias=False,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        frequency_scale = self.frequency_mlp(self._dct_descriptor(x)).view(x.shape[0], x.shape[1], 1, 1)
+        x = x * frequency_scale.expand_as(x)
+
+        avg_scale = self.channel_mlp(self.avg_pool(x).flatten(1))
+        max_scale = self.channel_mlp(self.max_pool(x).flatten(1))
+        channel_scale = torch.sigmoid(avg_scale + max_scale).view(x.shape[0], x.shape[1], 1, 1)
+        x = x * channel_scale.expand_as(x)
+
+        spatial_avg = x.mean(dim=1, keepdim=True)
+        spatial_max = x.amax(dim=1, keepdim=True)
+        spatial_scale = torch.sigmoid(self.spatial(torch.cat([spatial_avg, spatial_max], dim=1)))
+        return x * spatial_scale.expand_as(x)
+
+    def _dct_descriptor(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, _, _ = x.shape
+        flat = x.flatten(2)
+        length = flat.shape[-1]
+        modes = min(self.frequency_modes, length)
+        positions = torch.arange(length, device=x.device, dtype=x.dtype)
+        frequencies = torch.arange(modes, device=x.device, dtype=x.dtype).unsqueeze(1)
+        basis = torch.cos(torch.pi * (positions + 0.5) * frequencies / float(length))
+        scale = torch.full((modes,), (2.0 / float(length)) ** 0.5, device=x.device, dtype=x.dtype)
+        scale[0] = (1.0 / float(length)) ** 0.5
+        descriptor = torch.matmul(flat, (basis * scale.unsqueeze(1)).t())
+        if modes < self.frequency_modes:
+            descriptor = F.pad(descriptor, (0, self.frequency_modes - modes))
+        return descriptor.view(b, c, self.frequency_modes)
+
+
 class ASPP2D(nn.Module):
     """Four-branch ASPP used by the paper reference implementation.
 
@@ -95,10 +164,25 @@ class ASPPSEBlock(nn.Module):
         branch_channels: int,
         se_reduction: int,
         dilations: tuple[int, ...] = (1, 6, 12, 18),
+        attention_type: str = "se",
+        fcba_frequency_modes: int = 4,
+        fcba_spatial_kernel_size: int = 7,
+        fcba_reduction: int | None = None,
     ):
         super().__init__()
         self.aspp = ASPP2D(in_channels, branch_channels, dilations=dilations)
-        self.se = SELayer2D(self.aspp.out_channels, reduction=se_reduction)
+        attention_type = attention_type.lower()
+        if attention_type == "se":
+            self.se = SELayer2D(self.aspp.out_channels, reduction=se_reduction)
+        elif attention_type == "fcba":
+            self.se = FrequencyConvolutionBlockAttention2D(
+                self.aspp.out_channels,
+                reduction=fcba_reduction if fcba_reduction is not None else se_reduction,
+                frequency_modes=fcba_frequency_modes,
+                spatial_kernel_size=fcba_spatial_kernel_size,
+            )
+        else:
+            raise ValueError(f"Unknown DAEAC attention_type={attention_type!r}; expected 'se' or 'fcba'.")
 
     @property
     def out_channels(self) -> int:
@@ -116,6 +200,10 @@ class DAEACFeatureExtractor(nn.Module):
         feature_dim: int = 256,
         dilations: tuple[int, ...] = (1, 6, 12, 18),
         se_reduction: int = 16,
+        attention_type: str = "se",
+        fcba_frequency_modes: int = 4,
+        fcba_spatial_kernel_size: int = 7,
+        fcba_reduction: int | None = None,
     ):
         super().__init__()
         dila_num = len(dilations)
@@ -126,12 +214,39 @@ class DAEACFeatureExtractor(nn.Module):
             raise ValueError(f"Expected final ASPP channels to equal feature_dim={feature_dim}, got {c3}.")
 
         self.input_conv = nn.Conv2d(input_channels, initial_channels, kernel_size=(3, 3), padding=(0, 1), bias=False)
-        self.aspp_se_1 = ASPPSEBlock(initial_channels, initial_channels, se_reduction=4, dilations=dilations)
+        self.aspp_se_1 = ASPPSEBlock(
+            initial_channels,
+            initial_channels,
+            se_reduction=4,
+            dilations=dilations,
+            attention_type=attention_type,
+            fcba_frequency_modes=fcba_frequency_modes,
+            fcba_spatial_kernel_size=fcba_spatial_kernel_size,
+            fcba_reduction=fcba_reduction,
+        )
         self.residual_1 = ResidualConvBlock(c1, stride=1)
-        self.aspp_se_2 = ASPPSEBlock(c1, c1, se_reduction=8, dilations=dilations)
+        self.aspp_se_2 = ASPPSEBlock(
+            c1,
+            c1,
+            se_reduction=8,
+            dilations=dilations,
+            attention_type=attention_type,
+            fcba_frequency_modes=fcba_frequency_modes,
+            fcba_spatial_kernel_size=fcba_spatial_kernel_size,
+            fcba_reduction=fcba_reduction,
+        )
         self.residual_2 = ResidualConvBlock(c2, stride=2)
         self.transition = nn.Sequential(nn.BatchNorm2d(c2), nn.ReLU(inplace=True))
-        self.final_aspp_se = ASPPSEBlock(c2, c2, se_reduction=se_reduction, dilations=dilations)
+        self.final_aspp_se = ASPPSEBlock(
+            c2,
+            c2,
+            se_reduction=se_reduction,
+            dilations=dilations,
+            attention_type=attention_type,
+            fcba_frequency_modes=fcba_frequency_modes,
+            fcba_spatial_kernel_size=fcba_spatial_kernel_size,
+            fcba_reduction=fcba_reduction,
+        )
         self.gap = nn.AdaptiveAvgPool2d(1)
         self.feature_dim = int(feature_dim)
 
@@ -203,6 +318,10 @@ class DAEACNetwork(nn.Module):
         dropout: float = 0.0,
         adaptation_fc: bool = False,
         dual_head: bool = False,
+        attention_type: str = "se",
+        fcba_frequency_modes: int = 4,
+        fcba_spatial_kernel_size: int = 7,
+        fcba_reduction: int | None = None,
     ):
         super().__init__()
         self.feature_extractor = DAEACFeatureExtractor(
@@ -211,6 +330,10 @@ class DAEACNetwork(nn.Module):
             feature_dim=feature_dim,
             dilations=dilations,
             se_reduction=se_reduction,
+            attention_type=attention_type,
+            fcba_frequency_modes=fcba_frequency_modes,
+            fcba_spatial_kernel_size=fcba_spatial_kernel_size,
+            fcba_reduction=fcba_reduction,
         )
         classifier_cls = DualClassifierH if dual_head else ClassifierH
         self.classifier = classifier_cls(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
