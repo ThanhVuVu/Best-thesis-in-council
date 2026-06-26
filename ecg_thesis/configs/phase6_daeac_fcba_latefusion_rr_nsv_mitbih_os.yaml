@@ -1,0 +1,142 @@
+seed: 42
+
+logging:
+  wandb:
+    enabled: false
+    project: ecg-thesis
+    entity: null
+    run_name: null
+    group: phase6_daeac_fcba_latefusion_rr_nsv_mitbih_os
+    mode: null
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "mitbih_source", "oversampled"]
+    log_artifacts: false
+
+paths:
+  processed_dir: data/processed/phase6_daeac_paper
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mitbih_os
+
+data:
+  source_train: data/processed/phase6_daeac_record_splits_nsv/mitbih_train_oversampled.npz
+  source_eval: data/processed/phase6_daeac_record_splits_nsv/mitbih_val.npz
+  target_unlabeled: data/processed/phase6_daeac_record_splits_nsv/incart_train.npz
+  target_val: data/processed/phase6_daeac_record_splits_nsv/incart_val.npz
+  target_test: data/processed/phase6_daeac_record_splits_nsv/incart_test.npz
+  external_targets:
+    svdb: data/processed/phase6_daeac_record_splits_nsv/svdb_test.npz
+  input_key: auto
+  label_key: y
+  rr_mode: real
+  rr_features_key: rr_features
+  return_rr_features: true
+  morphology_only: true
+  class_names: ["N", "S", "V"]
+  num_classes: 3
+  source_usage: mitbih_record_disjoint_fit_validation
+  target_protocol: mitbih_to_incart_svdb
+  target_split_seconds: 300.0
+
+model:
+  num_classes: 3
+  input_channels: 1
+  input_rows: 1
+  initial_channels: 4
+  dilations: [1, 6, 12, 18]
+  feature_dim: 256
+  se_reduction: 16
+  attention: fcba
+  fcba:
+    frequency_modes: 4
+    spatial_kernel_size: 7
+  late_fusion:
+    enabled: true
+    rr_dim: 7
+    fc1_dim: 128
+    fc2_dim: 64
+  dropout: 0.0
+
+training:
+  checkpoint_prefix: daeac_fcba_rr_nsv_mitbih_os_base
+  epochs: 50
+  batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: false
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_mitbih_os_uda
+  source_usage: full
+  init_checkpoint: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mitbih_os/checkpoints/daeac_fcba_rr_nsv_mitbih_os_base_best.pt
+  epochs: 50
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: false
+  beta1: 0.1
+  beta2: 0.1
+  center_ema_gamma: 0.1
+  margin: 5.0
+  distance: l2
+  cluster_loss_reduction: mean
+  pseudo_thresholds:
+    N: 0.999
+    S: 0.99
+    V: 0.99
+  monitoring:
+    protocol: ericsson_v_measure_source_val_plus_target_val_logits
+    stability_window: 10
+    stability_min_epoch: 20
+    stability_cv_tolerance: 0.05
+    checkpoint_policy: maximum_v_measure_with_early_stopping
+
+evaluation:
+  batch_size: 256
+
+validation:
+  method: ericsson_v_measure
+  beta: 1.0
+  min_epochs: 20
+  patience: 10
+  min_delta: 0.0001
+
+losses:
+  source_cls_loss: weighted_ce
+  class_balanced_focal:
+    beta: 0.9999
+    gamma: 2.35
+
+rtd_daeac:
+  enabled: false
+  dual_head:
+    enabled: false
+    consistency_weight: 0.0
+  reliable_pseudo:
+    enabled: false
+    min_samples_per_class: 5
+    confidence_thresholds:
+      N: 0.999
+      S: 0.99
+      V: 0.99
+    distance_gate_mode: source_percentile
+    distance_percentile: 90
+    discrepancy_gate_mode: source_percentile
+    discrepancy_percentile: 90
+  class_balanced_source:
+    enabled: false
+    loss: weighted_ce
+  dynamic_weight:
+    enabled: false
+    ema_momentum: 0.9
+    rampup_epochs: 10
+    clip_min: 0.0
+    clip_max: 0.1
+  task_align:
+    enabled: false
+    feature_key: gap_embed
+    source_positive_only: true
+    target_positive_if_reliable: false
+    detach_task_mask: true
