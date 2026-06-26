@@ -1,0 +1,24 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_mitbih_os.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_mitbih_sqrtw
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "mitbih_source", "sqrt_weight"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mitbih_sqrtw
+
+data:
+  source_train: data/processed/phase6_daeac_record_splits_nsv/mitbih_train.npz
+  source_eval: data/processed/phase6_daeac_record_splits_nsv/mitbih_val.npz
+
+training:
+  checkpoint_prefix: daeac_fcba_rr_nsv_mitbih_sqrtw_base
+  use_class_weights: true
+  class_weight_mode: sqrt
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_mitbih_sqrtw_uda
+  init_checkpoint: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mitbih_sqrtw/checkpoints/daeac_fcba_rr_nsv_mitbih_sqrtw_base_best.pt
+  use_class_weights: true
+  class_weight_mode: sqrt
