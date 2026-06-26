@@ -204,8 +204,12 @@ class DAEACFeatureExtractor(nn.Module):
         fcba_frequency_modes: int = 4,
         fcba_spatial_kernel_size: int = 7,
         fcba_reduction: int | None = None,
+        input_rows: int = 3,
     ):
         super().__init__()
+        input_rows = int(input_rows)
+        if input_rows not in {1, 3}:
+            raise ValueError(f"DAEAC input_rows must be 1 or 3, got {input_rows}.")
         dila_num = len(dilations)
         c1 = initial_channels * dila_num
         c2 = initial_channels * dila_num * dila_num
@@ -213,7 +217,13 @@ class DAEACFeatureExtractor(nn.Module):
         if c3 != feature_dim:
             raise ValueError(f"Expected final ASPP channels to equal feature_dim={feature_dim}, got {c3}.")
 
-        self.input_conv = nn.Conv2d(input_channels, initial_channels, kernel_size=(3, 3), padding=(0, 1), bias=False)
+        self.input_conv = nn.Conv2d(
+            input_channels,
+            initial_channels,
+            kernel_size=(input_rows, 3),
+            padding=(0, 1),
+            bias=False,
+        )
         self.aspp_se_1 = ASPPSEBlock(
             initial_channels,
             initial_channels,
@@ -306,6 +316,42 @@ class DualClassifierH(nn.Module):
         return self.fc(dropped), self.fc2(dropped)
 
 
+class LateFusionClassifierH(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int = 256,
+        num_classes: int = 4,
+        rr_dim: int = 7,
+        fc1_dim: int = 128,
+        fc2_dim: int = 64,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.fc1 = nn.Linear(feature_dim, fc1_dim)
+        self.fc2 = nn.Linear(fc1_dim + rr_dim, fc2_dim)
+        self.fc3 = nn.Linear(fc2_dim, num_classes)
+        self.feature_dim = int(fc1_dim)
+        self.rr_dim = int(rr_dim)
+
+    def extract_morph_features(self, features: torch.Tensor) -> torch.Tensor:
+        return self.dropout(F.relu(self.fc1(features)))
+
+    def forward(self, features: torch.Tensor, rr_features: torch.Tensor | None = None, return_logits: bool = False):
+        if rr_features is None:
+            raise ValueError("LateFusionClassifierH requires rr_features.")
+        if rr_features.ndim != 2 or rr_features.shape[1] != self.rr_dim:
+            raise ValueError(f"Expected rr_features shape [B, {self.rr_dim}], got {tuple(rr_features.shape)}.")
+        morph_features = self.extract_morph_features(features)
+        fused = torch.cat([morph_features, rr_features.to(device=features.device, dtype=features.dtype)], dim=1)
+        hidden = self.dropout(F.relu(self.fc2(fused)))
+        logits = self.fc3(hidden)
+        probs = torch.softmax(logits, dim=1)
+        if return_logits:
+            return morph_features, logits, probs
+        return probs
+
+
 class DAEACNetwork(nn.Module):
     def __init__(
         self,
@@ -322,8 +368,15 @@ class DAEACNetwork(nn.Module):
         fcba_frequency_modes: int = 4,
         fcba_spatial_kernel_size: int = 7,
         fcba_reduction: int | None = None,
+        input_rows: int = 3,
+        late_fusion: bool = False,
+        rr_dim: int = 7,
+        late_fusion_fc1_dim: int = 128,
+        late_fusion_fc2_dim: int = 64,
     ):
         super().__init__()
+        if late_fusion and dual_head:
+            raise ValueError("DAEAC late fusion does not support dual_head=True in this phase.")
         self.feature_extractor = DAEACFeatureExtractor(
             input_channels=input_channels,
             initial_channels=initial_channels,
@@ -334,33 +387,66 @@ class DAEACNetwork(nn.Module):
             fcba_frequency_modes=fcba_frequency_modes,
             fcba_spatial_kernel_size=fcba_spatial_kernel_size,
             fcba_reduction=fcba_reduction,
+            input_rows=input_rows,
         )
-        classifier_cls = DualClassifierH if dual_head else ClassifierH
-        self.classifier = classifier_cls(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
+        if late_fusion:
+            self.classifier = LateFusionClassifierH(
+                feature_dim=feature_dim,
+                num_classes=num_classes,
+                rr_dim=rr_dim,
+                fc1_dim=late_fusion_fc1_dim,
+                fc2_dim=late_fusion_fc2_dim,
+                dropout=dropout,
+            )
+        else:
+            classifier_cls = DualClassifierH if dual_head else ClassifierH
+            self.classifier = classifier_cls(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
         self.adaptation_fc = nn.Linear(feature_dim, feature_dim) if adaptation_fc else nn.Identity()
         self.adaptation_fc_enabled = bool(adaptation_fc)
         self.dual_head_enabled = bool(dual_head)
-        self.feature_dim = int(feature_dim)
+        self.late_fusion_enabled = bool(late_fusion)
+        self.feature_dim = int(self.classifier.feature_dim if isinstance(self.classifier, LateFusionClassifierH) else feature_dim)
         self.num_classes = int(num_classes)
         self.apply(self._init_weights)
         if isinstance(self.adaptation_fc, nn.Linear):
             nn.init.eye_(self.adaptation_fc.weight)
             nn.init.zeros_(self.adaptation_fc.bias)
 
-    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
-        return self.adaptation_fc(self.feature_extractor(x))
+    def extract_features(self, x: torch.Tensor, rr_features: torch.Tensor | None = None) -> torch.Tensor:
+        features = self.adaptation_fc(self.feature_extractor(x))
+        if isinstance(self.classifier, LateFusionClassifierH):
+            return self.classifier.extract_morph_features(features)
+        return features
 
     def extract_feature_layers(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         layers = self.feature_extractor.forward_layers(x)
         layers["pre_adaptation_gap"] = layers["gap_embed"]
         layers["dan_fc"] = self.adaptation_fc(layers["gap_embed"])
-        layers["gap_embed"] = layers["dan_fc"]
+        if isinstance(self.classifier, LateFusionClassifierH):
+            layers["pre_fusion_gap"] = layers["dan_fc"]
+            layers["gap_embed"] = self.classifier.extract_morph_features(layers["dan_fc"])
+        else:
+            layers["gap_embed"] = layers["dan_fc"]
         return layers
 
-    def forward(self, x: torch.Tensor, return_logits: bool = False, return_dict: bool = False):
+    def forward(
+        self,
+        x: torch.Tensor,
+        rr_features: torch.Tensor | None = None,
+        return_logits: bool = False,
+        return_dict: bool = False,
+    ):
         if return_dict:
             layers = self.extract_feature_layers(x)
             features = layers["gap_embed"]
+            if isinstance(self.classifier, LateFusionClassifierH):
+                _, logits, probs = self.classifier(layers["pre_fusion_gap"], rr_features, return_logits=True)
+                return {
+                    "features": features,
+                    "logits": logits,
+                    "probabilities": probs,
+                    "feature_layers": layers,
+                }
             if isinstance(self.classifier, DualClassifierH):
                 logits_1, logits_2 = self.classifier.forward_head_logits(features)
                 logits = 0.5 * (logits_1 + logits_2)
@@ -383,7 +469,13 @@ class DAEACNetwork(nn.Module):
                 "feature_layers": layers,
             }
             return output
-        features = self.extract_features(x)
+        raw_features = self.adaptation_fc(self.feature_extractor(x))
+        if isinstance(self.classifier, LateFusionClassifierH):
+            features, logits, probs = self.classifier(raw_features, rr_features, return_logits=True)
+            if return_logits:
+                return features, logits, probs
+            return features, probs
+        features = raw_features
         logits, probs = self.classifier(features, return_logits=True)
         if return_logits:
             return features, logits, probs

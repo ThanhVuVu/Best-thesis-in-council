@@ -27,6 +27,9 @@ class DAEACDataset(Dataset):
         return_metadata: bool = False,
         class_names: list[str] | None = None,
         rr_mode: str = "real",
+        rr_features_key: str = "rr_features",
+        return_rr_features: bool = False,
+        morphology_only: bool = False,
     ):
         self.path = Path(npz_path)
         requested_input_key = str(input_key)
@@ -36,6 +39,9 @@ class DAEACDataset(Dataset):
         self.return_metadata = bool(return_metadata)
         self.class_names = list(class_names or PAPER_CLASS_NAMES)
         self.rr_mode = _validate_rr_mode(rr_mode)
+        self.rr_features_key = str(rr_features_key)
+        self.return_rr_features = bool(return_rr_features)
+        self.morphology_only = bool(morphology_only)
 
         self.data = np.load(self.path, allow_pickle=True)
         self.input_key = _resolve_input_key(self.data, self.path, requested_input_key)
@@ -44,8 +50,23 @@ class DAEACDataset(Dataset):
         if self.rr_mode == "neutralized_legacy":
             self.x[:, 0, 1, :] = 1.0
             self.x[:, 0, 2, :] = 1.0
+        if self.morphology_only:
+            self.x = self.x[:, :, :1, :]
 
         _validate_input_shape(self.x, self.path, self.input_key)
+
+        self.rr_features: np.ndarray | None = None
+        if self.return_rr_features:
+            if self.rr_features_key not in self.data:
+                raise KeyError(f"{self.path} does not contain required RR feature key '{self.rr_features_key}'.")
+            self.rr_features = self.data[self.rr_features_key].astype(np.float32)
+            if self.rr_features.shape != (len(self.x), 7):
+                raise ValueError(
+                    f"{self.path}: {self.rr_features_key} must have shape [{len(self.x)}, 7], "
+                    f"got {self.rr_features.shape}."
+                )
+            if not np.isfinite(self.rr_features).all():
+                raise ValueError(f"{self.path}: {self.rr_features_key} contains NaN or Inf.")
 
         self.y: np.ndarray | None = None
         if self.label_key in self.data:
@@ -64,6 +85,8 @@ class DAEACDataset(Dataset):
     def __getitem__(self, idx: int):
         x = torch.from_numpy(self.x[idx])
         values: list[Any] = [x]
+        if self.rr_features is not None:
+            values.append(torch.from_numpy(self.rr_features[idx]))
         if self.y is not None and self.require_labels:
             values.append(torch.tensor(int(self.y[idx]), dtype=torch.long))
         if self.return_index:
@@ -118,6 +141,9 @@ class DAEACTargetUnlabeledDataset(DAEACDataset):
         return_index: bool = True,
         class_names: list[str] | None = None,
         rr_mode: str = "real",
+        rr_features_key: str = "rr_features",
+        return_rr_features: bool = False,
+        morphology_only: bool = False,
     ):
         super().__init__(
             npz_path,
@@ -128,6 +154,9 @@ class DAEACTargetUnlabeledDataset(DAEACDataset):
             return_metadata=False,
             class_names=class_names,
             rr_mode=rr_mode,
+            rr_features_key=rr_features_key,
+            return_rr_features=return_rr_features,
+            morphology_only=morphology_only,
         )
 
 
@@ -147,8 +176,20 @@ def load_daeac_source_fit_val(
     split_same_path: bool = True,
     full_source_fit: bool = True,
     rr_mode: str = "real",
+    rr_features_key: str = "rr_features",
+    return_rr_features: bool = False,
+    morphology_only: bool = False,
 ) -> tuple[Dataset, Dataset, dict[str, Any]]:
-    source_ds = DAEACDataset(source_path, input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
+    source_ds = DAEACDataset(
+        source_path,
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+        rr_mode=rr_mode,
+        rr_features_key=rr_features_key,
+        return_rr_features=return_rr_features,
+        morphology_only=morphology_only,
+    )
     same_path = Path(source_path).resolve() == Path(eval_path).resolve()
     if same_path and split_same_path:
         fit_ds, val_ds, split_summary = split_daeac_source_fit_val(source_ds)
@@ -175,7 +216,16 @@ def load_daeac_source_fit_val(
         }
         return fit_ds, val_ds, summary
 
-    val_ds = DAEACDataset(eval_path, input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
+    val_ds = DAEACDataset(
+        eval_path,
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+        rr_mode=rr_mode,
+        rr_features_key=rr_features_key,
+        return_rr_features=return_rr_features,
+        morphology_only=morphology_only,
+    )
     summary = {
         "source_path": str(source_path),
         "eval_path": str(eval_path),
@@ -252,6 +302,9 @@ class DAEACPseudoLabeledDataset(Dataset):
 
     def __getitem__(self, idx: int):
         item = self.target_dataset[int(self.positions[idx])]
+        if isinstance(item, (tuple, list)) and len(item) >= 2 and torch.is_floating_point(item[1]):
+            x, rr_features = item[0], item[1]
+            return x, rr_features, self.labels[idx], self.confidence[idx], self.normalized_entropy[idx]
         x = item[0] if isinstance(item, (tuple, list)) else item
         return x, self.labels[idx], self.confidence[idx], self.normalized_entropy[idx]
 
@@ -278,6 +331,9 @@ def inspect_daeac_npz(
     class_names: list[str] | None = None,
     require_labels: bool = True,
     rr_mode: str = "real",
+    rr_features_key: str = "rr_features",
+    return_rr_features: bool = False,
+    morphology_only: bool = False,
 ) -> dict[str, Any]:
     ds = DAEACDataset(
         npz_path,
@@ -286,6 +342,9 @@ def inspect_daeac_npz(
         require_labels=require_labels,
         class_names=class_names,
         rr_mode=rr_mode,
+        rr_features_key=rr_features_key,
+        return_rr_features=return_rr_features,
+        morphology_only=morphology_only,
     )
     counts = class_counts_from_dataset(ds, len(ds.class_names)).astype(int).tolist()
     records = ds.records
@@ -303,13 +362,16 @@ def inspect_daeac_npz(
         "num_records": int(len(set(records.astype(str)))) if records is not None else None,
         "num_samples": int(len(ds)),
     }
+    if ds.rr_features is not None:
+        summary["rr_features_shape"] = list(ds.rr_features.shape)
+        summary["rr_features_finite"] = bool(np.isfinite(ds.rr_features).all())
     ds.close()
     return summary
 
 
 def daeac_row_stats(x: np.ndarray) -> dict[str, dict[str, float]]:
     _validate_input_shape(x, Path("<array>"), "x")
-    names = ("row0_morphology", "row1_pre_rr_ratio", "row2_near_pre_rr_ratio")
+    names = ("row0_morphology", "row1_pre_rr_ratio", "row2_near_pre_rr_ratio") if x.shape[2] == 3 else ("row0_morphology",)
     stats: dict[str, dict[str, float]] = {}
     for idx, name in enumerate(names):
         values = np.asarray(x[:, 0, idx, :], dtype=np.float32)
@@ -377,8 +439,8 @@ def _normalize_input_array(x: np.ndarray, path: Path, input_key: str) -> np.ndar
 
 
 def _validate_input_shape(x: np.ndarray, path: Path, input_key: str) -> None:
-    if x.ndim != 4 or tuple(x.shape[1:]) != (1, 3, 128):
-        raise ValueError(f"{path}: expected {input_key} shape [N, 1, 3, 128], got {x.shape}.")
+    if x.ndim != 4 or tuple(x.shape[1:]) not in {(1, 3, 128), (1, 1, 128)}:
+        raise ValueError(f"{path}: expected {input_key} shape [N, 1, 3, 128] or [N, 1, 1, 128], got {x.shape}.")
     if not np.isfinite(x).all():
         raise ValueError(f"{path}: {input_key} contains NaN or Inf.")
 

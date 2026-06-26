@@ -36,6 +36,7 @@ def main() -> None:
     label_key = str(config["data"].get("label_key", "y"))
     rr_mode = str(config["data"].get("rr_mode", "real"))
     class_names = list(config["data"]["class_names"])
+    dataset_kwargs = _daeac_dataset_kwargs(config)
     train_ds, val_ds, split_summary = load_daeac_source_fit_val(
         cfg_path(config, "data", "source_train"),
         cfg_path(config, "data", "source_eval"),
@@ -43,6 +44,7 @@ def main() -> None:
         label_key=label_key,
         class_names=class_names,
         rr_mode=rr_mode,
+        **dataset_kwargs,
         full_source_fit=str(config["data"].get("source_usage", "full")).lower() == "full",
     )
     print(f"DAEAC source fit/validation split: {split_summary}")
@@ -51,6 +53,15 @@ def main() -> None:
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
     summary = train_daeac_base(train_ds, val_ds, config, output, device)
     write_json(summary, output / "metrics" / "daeac_base_train_summary.json")
+
+
+def _daeac_dataset_kwargs(config: dict) -> dict:
+    data_cfg = dict(config.get("data", {}))
+    return {
+        "rr_features_key": str(data_cfg.get("rr_features_key", "rr_features")),
+        "return_rr_features": bool(data_cfg.get("return_rr_features", False)),
+        "morphology_only": bool(data_cfg.get("morphology_only", False)),
+    }
 
 
 if __name__ == "__main__":

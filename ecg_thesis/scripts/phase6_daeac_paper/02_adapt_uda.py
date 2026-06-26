@@ -36,22 +36,39 @@ def main() -> None:
     label_key = str(config["data"].get("label_key", "y"))
     rr_mode = str(config["data"].get("rr_mode", "real"))
     class_names = list(config["data"]["class_names"])
+    dataset_kwargs = _daeac_dataset_kwargs(config)
     source_ds = DAEACDataset(
         cfg_path(config, "data", "source_train"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
         rr_mode=rr_mode,
+        **dataset_kwargs,
     )
-    source_val_ds = DAEACDataset(cfg_path(config, "data", "source_eval"), input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
+    source_val_ds = DAEACDataset(
+        cfg_path(config, "data", "source_eval"),
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+        rr_mode=rr_mode,
+        **dataset_kwargs,
+    )
     target_ds = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
         rr_mode=rr_mode,
+        **dataset_kwargs,
     )
-    target_val_ds = DAEACTargetUnlabeledDataset(cfg_path(config, "data", "target_val"), input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
+    target_val_ds = DAEACTargetUnlabeledDataset(
+        cfg_path(config, "data", "target_val"),
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+        rr_mode=rr_mode,
+        **dataset_kwargs,
+    )
     source_ds = subset_first(source_ds, args.max_source_samples)
     target_ds = subset_first(target_ds, args.max_target_samples)
     source_val_ds = subset_first(source_val_ds, args.max_val_samples)
@@ -79,6 +96,15 @@ def _apply_domain_pair(config: dict, pair: str | None) -> None:
     config["adaptation"]["checkpoint_prefix"] = f"daeac_paper_{pair}"
     if not config["adaptation"].get("init_checkpoint"):
         config["adaptation"]["init_checkpoint"] = checkpoint
+
+
+def _daeac_dataset_kwargs(config: dict) -> dict:
+    data_cfg = dict(config.get("data", {}))
+    return {
+        "rr_features_key": str(data_cfg.get("rr_features_key", "rr_features")),
+        "return_rr_features": bool(data_cfg.get("return_rr_features", False)),
+        "morphology_only": bool(data_cfg.get("morphology_only", False)),
+    }
 
 
 if __name__ == "__main__":

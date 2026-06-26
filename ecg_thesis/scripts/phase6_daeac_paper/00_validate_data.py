@@ -7,7 +7,7 @@ import torch
 
 from common import cfg_path, load_phase1_config
 from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset, inspect_daeac_npz, load_daeac_source_fit_val
-from src.models.daeac_paper import DAEACNetwork
+from src.training.train_daeac_paper import build_daeac_model
 
 
 def main() -> None:
@@ -20,14 +20,18 @@ def main() -> None:
     label_key = str(config["data"].get("label_key", "y"))
     rr_mode = str(config["data"].get("rr_mode", "real"))
     class_names = list(config["data"]["class_names"])
+    dataset_kwargs = _daeac_dataset_kwargs(config)
 
-    model = DAEACNetwork(num_classes=int(config["data"]["num_classes"]))
-    features, logits, probs = model(torch.zeros(2, 1, 3, 128), return_logits=True)
-    assert tuple(features.shape) == (2, 256), features.shape
+    model = build_daeac_model(config, torch.device("cpu"))
+    input_rows = int(config.get("model", {}).get("input_rows", 3))
+    rr_features = torch.zeros(2, int(dict(config.get("model", {}).get("late_fusion", {})).get("rr_dim", 7)))
+    rr_arg = rr_features if bool(dict(config.get("model", {}).get("late_fusion", {})).get("enabled", False)) else None
+    features, logits, probs = model(torch.zeros(2, 1, input_rows, 128), rr_features=rr_arg, return_logits=True)
+    assert features.shape[0] == 2, features.shape
     assert tuple(logits.shape) == (2, 4), logits.shape
     assert tuple(probs.shape) == (2, 4), probs.shape
     assert torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-6)
-    print("DAEAC model forward OK: features=(2,256), logits=(2,4), probs=(2,4)")
+    print(f"DAEAC model forward OK: features={tuple(features.shape)}, logits=(2,4), probs=(2,4)")
 
     for key, require_labels in (
         ("source_train", True),
@@ -44,6 +48,8 @@ def main() -> None:
             class_names=class_names,
             require_labels=require_labels,
             rr_mode=rr_mode,
+            rr_features_key=dataset_kwargs["rr_features_key"],
+            return_rr_features=dataset_kwargs["return_rr_features"],
         )
         print(f"{key}: {summary}")
         _assert_real_rr_rows(key, summary, rr_mode)
@@ -62,6 +68,8 @@ def main() -> None:
             class_names=class_names,
             require_labels=True,
             rr_mode=rr_mode,
+            rr_features_key=dataset_kwargs["rr_features_key"],
+            return_rr_features=dataset_kwargs["return_rr_features"],
         )
         print(f"external_targets.{name}: {summary}")
         _assert_real_rr_rows(f"external_targets.{name}", summary, rr_mode)
@@ -76,6 +84,7 @@ def main() -> None:
             label_key=label_key,
             class_names=class_names,
             rr_mode=rr_mode,
+            **dataset_kwargs,
             full_source_fit=str(config["data"].get("source_usage", "full")).lower() == "full",
         )
         print(f"source_train/source_eval share one file; source split: {split_summary}")
@@ -86,11 +95,20 @@ def main() -> None:
         label_key=label_key,
         class_names=class_names,
         rr_mode=rr_mode,
+        **dataset_kwargs,
     )
     item = target[0]
-    if not (isinstance(item, tuple) and len(item) == 2):
-        raise AssertionError("Target unlabeled dataset must return only (x, index).")
-    source = DAEACDataset(cfg_path(config, "data", "source_train"), input_key=input_key, label_key=label_key, class_names=class_names, rr_mode=rr_mode)
+    expected_len = 3 if dataset_kwargs["return_rr_features"] else 2
+    if not (isinstance(item, tuple) and len(item) == expected_len):
+        raise AssertionError("Target unlabeled dataset must return only non-label tensors plus index.")
+    source = DAEACDataset(
+        cfg_path(config, "data", "source_train"),
+        input_key=input_key,
+        label_key=label_key,
+        class_names=class_names,
+        rr_mode=rr_mode,
+        **dataset_kwargs,
+    )
     print(f"Target unlabeled safety OK. Source samples={len(source)}, target_unlabeled samples={len(target)}")
 
 
@@ -104,6 +122,15 @@ def _assert_real_rr_rows(name: str, summary: dict, rr_mode: str) -> None:
     )
     if str(rr_mode).lower() == "real" and bool(summary["rr_rows_neutralized"]):
         raise AssertionError(f"{name}: rr_mode='real' but Row 1/2 are neutralized to constant 1.0.")
+
+
+def _daeac_dataset_kwargs(config: dict) -> dict:
+    data_cfg = dict(config.get("data", {}))
+    return {
+        "rr_features_key": str(data_cfg.get("rr_features_key", "rr_features")),
+        "return_rr_features": bool(data_cfg.get("return_rr_features", False)),
+        "morphology_only": bool(data_cfg.get("morphology_only", False)),
+    }
 
 
 if __name__ == "__main__":

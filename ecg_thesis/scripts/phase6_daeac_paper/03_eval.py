@@ -42,10 +42,19 @@ def main() -> None:
     )
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
+    rr_mode = str(config["data"].get("rr_mode", "real"))
     class_names = list(config["data"]["class_names"])
+    dataset_kwargs = _daeac_dataset_kwargs(config)
     datasets = _eval_datasets(config, args.dataset)
     for name, path in datasets:
-        ds = DAEACDataset(path, input_key=input_key, label_key=label_key, class_names=class_names)
+        ds = DAEACDataset(
+            path,
+            input_key=input_key,
+            label_key=label_key,
+            class_names=class_names,
+            rr_mode=rr_mode,
+            **dataset_kwargs,
+        )
         ds = subset_first(ds, args.max_samples)
         loader = DataLoader(ds, batch_size=int(config["evaluation"]["batch_size"]), shuffle=False, num_workers=0)
         result = evaluate_daeac_model(model, loader, device, class_names)
@@ -79,6 +88,15 @@ def _eval_datasets(config: dict, dataset: str) -> list[tuple[str, Path]]:
         valid = ["source", "target", "both", "external", "all", *external.keys()]
         raise ValueError(f"Unknown dataset '{dataset}'. Valid values: {valid}")
     return selected
+
+
+def _daeac_dataset_kwargs(config: dict) -> dict:
+    data_cfg = dict(config.get("data", {}))
+    return {
+        "rr_features_key": str(data_cfg.get("rr_features_key", "rr_features")),
+        "return_rr_features": bool(data_cfg.get("return_rr_features", False)),
+        "morphology_only": bool(data_cfg.get("morphology_only", False)),
+    }
 
 
 def _resolve_data_path(config: dict, value: str | Path) -> Path:
