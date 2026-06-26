@@ -1,0 +1,33 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_daeac_mitbih_svdb.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_dhrel_mitbih_svdb
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "dual_head", "reliable_pseudo", "mitbih_svdb"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_dhrel_mitbih_svdb
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_dhrel_mitbih_svdb
+  pseudo_thresholds:
+    N: 0.995
+    S: 0.97
+    V: 0.99
+
+rtd_daeac:
+  enabled: true
+  dual_head:
+    enabled: true
+    consistency_weight: 0.0
+  reliable_pseudo:
+    enabled: true
+    min_samples_per_class: 5
+    confidence_thresholds:
+      N: 0.995
+      S: 0.97
+      V: 0.99
+    distance_gate_mode: source_percentile
+    distance_percentile: 95
+    discrepancy_gate_mode: source_percentile
+    discrepancy_percentile: 95

@@ -14,7 +14,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from src.data.daeac_dataset import DAEACDataset, DAEACPseudoLabeledDataset, DAEACTargetUnlabeledDataset
-from src.models.daeac_paper import ClassifierH, DAEACNetwork, DualClassifierH, LateFusionClassifierH
+from src.models.daeac_paper import (
+    ClassifierH,
+    DAEACNetwork,
+    DualClassifierH,
+    DualLateFusionClassifierH,
+    LateFusionClassifierH,
+)
 from src.training.daeac_losses import (
     build_daeac_classification_loss,
     cluster_aligning_loss,
@@ -97,7 +103,7 @@ def train_daeac_base(
         losses: list[float] = []
         for batch in train_loader:
             x, rr_features, y = _unpack_source_batch(batch, device)
-            output = model(x, rr_features=rr_features, return_dict=True)
+            output = _forward_model_dict(model, x, rr_features=rr_features)
             loss = _source_classification_loss(output, y, class_weights, cls_loss_fn, config)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -240,7 +246,7 @@ def adapt_daeac(
             source_output = model(x_s, rr_features=rr_s, return_dict=True)
             z_s = source_output["features"]
             loss_cls = _source_classification_loss(source_output, y_s, class_weights, cls_loss_fn, config)
-            z_t = model.extract_features(x_t, rr_features=rr_t)
+            z_t = _extract_model_features(model, x_t, rr_features=rr_t)
 
             local_source = batch_centers(z_s, y_s, center_memory.num_classes)
             local_target = batch_centers(
@@ -422,7 +428,7 @@ def _daeac_target_logits(model, loader: DataLoader, device: torch.device) -> np.
     model.eval()
     for batch in loader:
         x, rr_features = _unpack_input_batch(batch, device)
-        _, logits, _ = model(x, rr_features=rr_features, return_logits=True)
+        _, logits, _ = _forward_model_logits(model, x, rr_features=rr_features)
         values.append(logits.detach().cpu().numpy())
     return np.concatenate(values)
 
@@ -442,7 +448,7 @@ def evaluate_daeac_model(
     with torch.no_grad():
         for batch in loader:
             x, rr_features, y = _unpack_source_batch(batch, device)
-            features, logits, probs = model(x, rr_features=rr_features, return_logits=True)
+            features, logits, probs = _forward_model_logits(model, x, rr_features=rr_features)
             probs_cpu = probs.detach().cpu().numpy()
             y_true.append(y.detach().cpu().numpy())
             y_pred.append(probs_cpu.argmax(axis=1))
@@ -566,6 +572,16 @@ def _prepare_checkpoint_state_dict_for_model(state_dict: dict[str, torch.Tensor]
         copies = {
             "classifier.fc2.weight": "classifier.fc.weight",
             "classifier.fc2.bias": "classifier.fc.bias",
+        }
+        for missing_key, source_key in copies.items():
+            if missing_key not in prepared and source_key in prepared:
+                prepared[missing_key] = prepared[source_key].clone()
+    if isinstance(model.classifier, DualLateFusionClassifierH):
+        copies = {
+            "classifier.fc2_b.weight": "classifier.fc2.weight",
+            "classifier.fc2_b.bias": "classifier.fc2.bias",
+            "classifier.fc3_b.weight": "classifier.fc3.weight",
+            "classifier.fc3_b.bias": "classifier.fc3.bias",
         }
         for missing_key, source_key in copies.items():
             if missing_key not in prepared and source_key in prepared:
@@ -724,7 +740,7 @@ class ReliablePseudoLabelSelector:
         config: dict[str, Any],
         device: torch.device,
     ) -> "ReliablePseudoLabelSelector":
-        if not isinstance(model.classifier, DualClassifierH):
+        if not _is_dual_head_classifier(model.classifier):
             raise ValueError("Reliable pseudo-labeling requires rtd_daeac.dual_head.enabled=true.")
         rtd_cfg = dict(config.get("rtd_daeac", {}).get("reliable_pseudo", {}))
         if str(rtd_cfg.get("distance_gate_mode", "source_percentile")).lower() != "source_percentile":
@@ -743,7 +759,7 @@ class ReliablePseudoLabelSelector:
         with torch.no_grad():
             for batch in source_loader:
                 x, rr_features, y = _unpack_source_batch(batch, device)
-                output = model(x, rr_features=rr_features, return_dict=True)
+                output = _forward_model_dict(model, x, rr_features=rr_features)
                 if "logits_1" not in output or "logits_2" not in output:
                     raise ValueError("Reliable pseudo-labeling requires dual-head logits.")
                 features_all.append(output["features"].detach())
@@ -783,10 +799,15 @@ class ReliablePseudoLabelSelector:
         x: torch.Tensor,
         rr_features: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        if not isinstance(aux_classifier, DualClassifierH):
+        if not _is_dual_head_classifier(aux_classifier):
             raise ValueError("Reliable pseudo-labeling requires a dual-head auxiliary classifier snapshot.")
-        features = model.extract_features(x.to(self.source_centers.device), rr_features=rr_features)
-        logits_1, logits_2 = aux_classifier.forward_head_logits(features)
+        x = x.to(self.source_centers.device)
+        if isinstance(aux_classifier, DualLateFusionClassifierH):
+            raw_features = model.adaptation_fc(model.feature_extractor(x))
+            features, logits_1, logits_2 = aux_classifier.forward_head_logits(raw_features, rr_features)
+        else:
+            features = _extract_model_features(model, x, rr_features=rr_features)
+            logits_1, logits_2 = aux_classifier.forward_head_logits(features)
         logits = 0.5 * (logits_1 + logits_2)
         probabilities = torch.softmax(logits, dim=1)
         confidence, labels = probabilities.max(dim=1)
@@ -817,6 +838,49 @@ class ReliablePseudoLabelSelector:
         }
 
 
+def _is_dual_head_classifier(classifier: nn.Module) -> bool:
+    return isinstance(classifier, (DualClassifierH, DualLateFusionClassifierH))
+
+
+def _extract_model_features(
+    model: DAEACNetwork,
+    x: torch.Tensor,
+    rr_features: torch.Tensor | None = None,
+) -> torch.Tensor:
+    try:
+        return model.extract_features(x, rr_features=rr_features)
+    except TypeError:
+        if rr_features is not None:
+            raise
+        return model.extract_features(x)
+
+
+def _forward_model_dict(
+    model: DAEACNetwork,
+    x: torch.Tensor,
+    rr_features: torch.Tensor | None = None,
+) -> dict[str, torch.Tensor]:
+    try:
+        return model(x, rr_features=rr_features, return_dict=True)
+    except TypeError:
+        if rr_features is not None:
+            raise
+        return model(x, return_dict=True)
+
+
+def _forward_model_logits(
+    model: DAEACNetwork,
+    x: torch.Tensor,
+    rr_features: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    try:
+        return model(x, rr_features=rr_features, return_logits=True)
+    except TypeError:
+        if rr_features is not None:
+            raise
+        return model(x, return_logits=True)
+
+
 def compute_global_source_centers(
     model: DAEACNetwork,
     loader: DataLoader,
@@ -829,7 +893,7 @@ def compute_global_source_centers(
     with torch.no_grad():
         for batch in loader:
             x, rr_features, y = _unpack_source_batch(batch, device)
-            features = model.extract_features(x, rr_features=rr_features)
+            features = _extract_model_features(model, x, rr_features=rr_features)
             for cls in range(num_classes):
                 mask = y == cls
                 if bool(mask.any()):
@@ -851,7 +915,7 @@ def compute_global_target_centers(
     with torch.no_grad():
         for batch in loader:
             x, rr_features = _unpack_input_batch(batch, device)
-            features, _, probs = model(x, rr_features=rr_features, return_logits=True)
+            features, _, probs = _forward_model_logits(model, x, rr_features=rr_features)
             conf, pseudo = probs.max(dim=1)
             confident = conf > thresholds[pseudo]
             for cls in range(num_classes):
@@ -875,7 +939,7 @@ def compute_global_pseudo_target_centers(
     with torch.no_grad():
         for batch in loader:
             x, rr_features, pseudo, *_ = _unpack_pseudo_batch(batch, device)
-            features = model.extract_features(x, rr_features=rr_features)
+            features = _extract_model_features(model, x, rr_features=rr_features)
             for cls in range(num_classes):
                 mask = pseudo == cls
                 if bool(mask.any()):
@@ -937,7 +1001,7 @@ def build_pseudo_labeled_target_dataset(
                 raw_features = model.adaptation_fc(model.feature_extractor(x))
                 _, _, probabilities = aux_classifier(raw_features, rr_features, return_logits=True)
             else:
-                features = model.extract_features(x, rr_features=rr_features)
+                features = _extract_model_features(model, x, rr_features=rr_features)
                 _, probabilities = aux_classifier(features, return_logits=True)
             confidence, pseudo = probabilities.max(dim=1)
             accepted = confidence > thresholds[pseudo]

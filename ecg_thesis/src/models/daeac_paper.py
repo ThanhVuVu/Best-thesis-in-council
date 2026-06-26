@@ -352,6 +352,51 @@ class LateFusionClassifierH(nn.Module):
         return probs
 
 
+class DualLateFusionClassifierH(LateFusionClassifierH):
+    def __init__(
+        self,
+        feature_dim: int = 256,
+        num_classes: int = 4,
+        rr_dim: int = 7,
+        fc1_dim: int = 128,
+        fc2_dim: int = 64,
+        dropout: float = 0.0,
+    ):
+        super().__init__(
+            feature_dim=feature_dim,
+            num_classes=num_classes,
+            rr_dim=rr_dim,
+            fc1_dim=fc1_dim,
+            fc2_dim=fc2_dim,
+            dropout=dropout,
+        )
+        self.fc2_b = nn.Linear(fc1_dim + rr_dim, fc2_dim)
+        self.fc3_b = nn.Linear(fc2_dim, num_classes)
+
+    def forward_head_logits(
+        self,
+        features: torch.Tensor,
+        rr_features: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if rr_features is None:
+            raise ValueError("DualLateFusionClassifierH requires rr_features.")
+        if rr_features.ndim != 2 or rr_features.shape[1] != self.rr_dim:
+            raise ValueError(f"Expected rr_features shape [B, {self.rr_dim}], got {tuple(rr_features.shape)}.")
+        morph_features = self.extract_morph_features(features)
+        fused = torch.cat([morph_features, rr_features.to(device=features.device, dtype=features.dtype)], dim=1)
+        hidden_1 = self.dropout(F.relu(self.fc2(fused)))
+        hidden_2 = self.dropout(F.relu(self.fc2_b(fused)))
+        return morph_features, self.fc3(hidden_1), self.fc3_b(hidden_2)
+
+    def forward(self, features: torch.Tensor, rr_features: torch.Tensor | None = None, return_logits: bool = False):
+        morph_features, logits_1, logits_2 = self.forward_head_logits(features, rr_features)
+        logits = 0.5 * (logits_1 + logits_2)
+        probs = torch.softmax(logits, dim=1)
+        if return_logits:
+            return morph_features, logits, probs
+        return probs
+
+
 class DAEACNetwork(nn.Module):
     def __init__(
         self,
@@ -375,8 +420,6 @@ class DAEACNetwork(nn.Module):
         late_fusion_fc2_dim: int = 64,
     ):
         super().__init__()
-        if late_fusion and dual_head:
-            raise ValueError("DAEAC late fusion does not support dual_head=True in this phase.")
         self.feature_extractor = DAEACFeatureExtractor(
             input_channels=input_channels,
             initial_channels=initial_channels,
@@ -390,7 +433,8 @@ class DAEACNetwork(nn.Module):
             input_rows=input_rows,
         )
         if late_fusion:
-            self.classifier = LateFusionClassifierH(
+            late_classifier_cls = DualLateFusionClassifierH if dual_head else LateFusionClassifierH
+            self.classifier = late_classifier_cls(
                 feature_dim=feature_dim,
                 num_classes=num_classes,
                 rr_dim=rr_dim,
@@ -440,7 +484,22 @@ class DAEACNetwork(nn.Module):
             layers = self.extract_feature_layers(x)
             features = layers["gap_embed"]
             if isinstance(self.classifier, LateFusionClassifierH):
-                _, logits, probs = self.classifier(layers["pre_fusion_gap"], rr_features, return_logits=True)
+                raw_features = layers["pre_fusion_gap"]
+                if isinstance(self.classifier, DualLateFusionClassifierH):
+                    _, logits_1, logits_2 = self.classifier.forward_head_logits(raw_features, rr_features)
+                    logits = 0.5 * (logits_1 + logits_2)
+                    probs = torch.softmax(logits, dim=1)
+                    return {
+                        "features": features,
+                        "logits": logits,
+                        "probabilities": probs,
+                        "feature_layers": layers,
+                        "logits_1": logits_1,
+                        "logits_2": logits_2,
+                        "probabilities_1": torch.softmax(logits_1, dim=1),
+                        "probabilities_2": torch.softmax(logits_2, dim=1),
+                    }
+                _, logits, probs = self.classifier(raw_features, rr_features, return_logits=True)
                 return {
                     "features": features,
                     "logits": logits,
