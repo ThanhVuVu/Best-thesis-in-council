@@ -229,18 +229,24 @@ def train_daeac_cdan(
             if epoch <= int(cdan_cfg.get("warmup_epochs", 0)):
                 lambd = 0.0
                 lambda_base = 0.0
-            x_s, y_s = _source_batch(next(source_iter), device)
-            x_t = _target_batch(next(target_iter), device)
+            x_s, rr_s, y_s = _source_batch_with_optional_rr(next(source_iter), device)
+            x_t, rr_t = _target_batch_with_optional_rr(next(target_iter), device)
+            rr_all = _cat_optional_rr(rr_s, rr_t)
 
             optimizer.zero_grad(set_to_none=True)
             # Source and target share one encoder and therefore one mixed BN
             # update per iteration; sequential passes would bias running stats
             # toward whichever domain is forwarded last.
-            features_all = model.extract_features(torch.cat([x_s, x_t], dim=0))
+            raw_features_all = model.extract_raw_features(torch.cat([x_s, x_t], dim=0))
+            features_all = model.domain_features(raw_features_all)
+            raw_s = raw_features_all[: x_s.shape[0]]
+            raw_t = raw_features_all[x_s.shape[0] :]
             f_s = features_all[: x_s.shape[0]]
             f_t = features_all[x_s.shape[0] :]
-            logits_s = model.class_logits(f_s)
-            logits_t = model.class_logits(f_t)
+            rr_s_for_logits = rr_all[: x_s.shape[0]] if rr_all is not None else None
+            rr_t_for_logits = rr_all[x_s.shape[0] :] if rr_all is not None else None
+            logits_s = model.class_logits(raw_s, rr_s_for_logits)
+            logits_t = model.class_logits(raw_t, rr_t_for_logits)
             loss_cls = cls_loss_fn(logits_s, y_s)
             logits_all = torch.cat([logits_s, logits_t], dim=0)
             domain_logits = model.forward_domain_from_features(
@@ -548,7 +554,7 @@ def build_daeac_cdan_model(config: dict[str, Any], device: torch.device, init_ch
     return DAEACCDANModel(
         feature_extractor=base.feature_extractor,
         classifier=base.classifier,
-        feature_dim=int(config["model"]["feature_dim"]),
+        feature_dim=int(base.feature_dim),
         num_classes=int(config["data"]["num_classes"]),
         conditioning=str(cfg.get("conditioning", "auto")),
         randomized_threshold=int(cfg.get("randomized_threshold", 4096)),
@@ -667,7 +673,7 @@ def _cat_optional_rr(rr_source: torch.Tensor | None, rr_target: torch.Tensor | N
     if rr_source is None and rr_target is None:
         return None
     if rr_source is None or rr_target is None:
-        raise ValueError("Source and target batches must both include rr_features for RR late-fusion DANN.")
+        raise ValueError("Source and target batches must both include rr_features for RR late-fusion adversarial training.")
     return torch.cat([rr_source, rr_target], dim=0)
 
 

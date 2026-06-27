@@ -1,0 +1,39 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_daeac_mitbih_incart.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_cdan_mitbih_incart
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "cdan", "cdan_e", "mitbih_incart"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_cdan_mitbih_incart
+
+training:
+  checkpoint_prefix: daeac_fcba_rr_nsv_cdan_mitbih_incart
+  init_checkpoint: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mitbih_sqrtw/checkpoints/daeac_fcba_rr_nsv_mitbih_sqrtw_base_best.pt
+  epochs: 50
+  source_batch_size: 256
+  target_batch_size: 256
+  lr: 0.005
+  weight_decay: 0.0001
+  lr_decay_gamma: 0.99
+  lr_decay_every_steps: 200
+  use_class_weights: true
+  class_weight_mode: sqrt
+  source_loss: weighted_ce
+  optimizer: adam
+  scheduler: step
+
+cdan:
+  method: cdan_e
+  lambda_base: 0.2
+  lambda_schedule: progressive
+  fixed_lambda: 1.0
+  warmup_epochs: 0
+  conditioning: auto
+  randomized_threshold: 4096
+  random_dim: 1024
+  domain_hidden_dim: 128
+  dropout: 0.3
+  detach_softmax_in_T: true
+  normalize_entropy_weights: true
