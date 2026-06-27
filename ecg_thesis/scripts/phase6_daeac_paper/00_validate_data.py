@@ -118,6 +118,13 @@ def main() -> None:
 
 def _assert_real_rr_rows(name: str, summary: dict, rr_mode: str) -> None:
     stats = summary["row_stats"]
+    if "row1_pre_rr_ratio" not in stats or "row2_near_pre_rr_ratio" not in stats:
+        print(
+            f"{name} row stats: "
+            f"row0 mean={stats['row0_morphology']['mean']:.6f} std={stats['row0_morphology']['std']:.6f}; "
+            "morphology_only input, Row 1/2 RR rows are not passed to the model"
+        )
+        return
     print(
         f"{name} row stats: "
         f"row0 mean={stats['row0_morphology']['mean']:.6f} std={stats['row0_morphology']['std']:.6f}; "

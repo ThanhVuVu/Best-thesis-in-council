@@ -1,0 +1,26 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_hybrid_mkmmd_mcc_ds1_ds2.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_no_rr7_nsv_hybrid_mkmmd_mcc_ds1_ds2
+    tags: ["phase6", "daeac", "fcba", "no_rr7", "nsv", "hybrid_mkmmd_mcc", "ds1_ds2"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_no_rr7_nsv_hybrid_mkmmd_mcc_ds1_ds2
+
+data:
+  return_rr_features: false
+  morphology_only: true
+
+model:
+  input_rows: 1
+  late_fusion:
+    enabled: false
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_no_rr7_nsv_hybrid_mkmmd_mcc_ds1_ds2
+  init_checkpoint: outputs/phase6_daeac_fcba_no_rr7_nsv_sqrtw/checkpoints/daeac_fcba_no_rr7_nsv_sqrtw_base_best.pt
+  mkmmd:
+    layers:
+      gap_embed: 1.0
+      late_fusion_hidden: 0.0
