@@ -1,0 +1,30 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_hybrid_mkmmd_mcc_ds1_svdb.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_hybrid_mkmmd_mcc_balanced_ds1_svdb
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "hybrid_mkmmd_mcc", "balanced_pseudo", "ds1_svdb"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_hybrid_mkmmd_mcc_balanced_ds1_svdb
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_hybrid_mkmmd_mcc_balanced_ds1_svdb
+  mkmmd:
+    layers:
+      gap_embed: 0.0
+      late_fusion_hidden: 0.0
+      dan_fc: 1.0
+  pseudo_filter:
+    enabled: true
+    max_per_class:
+      N: 48
+      S: 64
+      V: 64
+  pseudo_collapse_guard:
+    enabled: true
+    max_class_ratio: 0.85
+    min_class_ratio:
+      S: 0.05
+    scale: 0.0
+    mcc_scale: 0.25
