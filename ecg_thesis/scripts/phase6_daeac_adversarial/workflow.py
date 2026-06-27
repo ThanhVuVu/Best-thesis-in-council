@@ -56,22 +56,21 @@ def prepare_train_run(args, method_section: str) -> tuple[dict[str, Any], Any, A
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
+    dataset_kwargs = _dataset_kwargs(config, input_key, label_key, class_names)
     source_path = cfg_path(config, "data", "source_train")
     val_path = cfg_path(config, "data", "source_eval")
-    source_full = DAEACDataset(source_path, input_key=input_key, label_key=label_key, class_names=class_names)
+    source_full = DAEACDataset(source_path, **dataset_kwargs)
     if _same_path(source_path, val_path) and bool(config.get("source_split", {}).get("enabled", True)):
         source_ds, val_ds = _split_source_fit_val(source_full, config)
     else:
         source_ds = source_full
-        val_ds = DAEACDataset(val_path, input_key=input_key, label_key=label_key, class_names=class_names)
+        val_ds = DAEACDataset(val_path, **dataset_kwargs)
     target_ds = DAEACTargetUnlabeledDataset(
         cfg_path(config, "data", "target_unlabeled"),
-        input_key=input_key,
-        label_key=label_key,
-        class_names=class_names,
+        **dataset_kwargs,
     )
     target_val_ds = DAEACTargetUnlabeledDataset(
-        cfg_path(config, "data", "target_val"), input_key=input_key, label_key=label_key, class_names=class_names
+        cfg_path(config, "data", "target_val"), **dataset_kwargs
     )
     source_ds = subset_first(source_ds, args.max_source_samples)
     val_ds = subset_first(val_ds, args.max_val_samples)
@@ -79,6 +78,19 @@ def prepare_train_run(args, method_section: str) -> tuple[dict[str, Any], Any, A
     target_val_ds = subset_first(target_val_ds, args.max_val_samples)
     output = ensure_dir(cfg_path(config, "paths", "output_dir"))
     return config, source_ds, val_ds, target_ds, target_val_ds, output, device
+
+
+def _dataset_kwargs(config: dict[str, Any], input_key: str, label_key: str, class_names: list[str]) -> dict[str, Any]:
+    data_cfg = config.get("data", {})
+    return {
+        "input_key": input_key,
+        "label_key": label_key,
+        "class_names": class_names,
+        "rr_mode": str(data_cfg.get("rr_mode", "real")),
+        "rr_features_key": str(data_cfg.get("rr_features_key", "rr_features")),
+        "return_rr_features": bool(data_cfg.get("return_rr_features", False)),
+        "morphology_only": bool(data_cfg.get("morphology_only", False)),
+    }
 
 
 def apply_domain_pair(config: dict[str, Any], domain_pair: str | None, method: str) -> dict[str, Any]:

@@ -85,9 +85,10 @@ def train_daeac_dann(
             if epoch <= int(dann_cfg.get("warmup_epochs", 0)):
                 lambd = 0.0
                 alpha = 0.0
-            x_s, y_s = _source_batch(next(source_iter), device)
-            x_t = _target_batch(next(target_iter), device)
+            x_s, rr_s, y_s = _source_batch_with_optional_rr(next(source_iter), device)
+            x_t, rr_t = _target_batch_with_optional_rr(next(target_iter), device)
             x_domain = torch.cat([x_s, x_t], dim=0)
+            _cat_optional_rr(rr_s, rr_t)
             y_domain = torch.cat(
                 [
                     torch.zeros(x_s.shape[0], dtype=torch.long),
@@ -99,9 +100,10 @@ def train_daeac_dann(
             optimizer.zero_grad(set_to_none=True)
             # One mixed-domain encoder pass keeps shared BatchNorm statistics
             # symmetric and avoids updating them twice with source samples.
-            features_domain = model.extract_features(x_domain)
-            logits_s = model.class_logits(features_domain[: x_s.shape[0]])
-            domain_logits = model.forward_domain_from_features(features_domain, lambd=lambd)
+            raw_features_domain = model.extract_raw_features(x_domain)
+            logits_s = model.class_logits(raw_features_domain[: x_s.shape[0]], rr_s)
+            domain_features = model.domain_features(raw_features_domain)
+            domain_logits = model.forward_domain_from_features(domain_features, lambd=lambd)
             loss_cls = cls_loss_fn(logits_s, y_s)
             loss_domain = domain_loss_fn(domain_logits, y_domain)
             loss = loss_cls + alpha * loss_domain
@@ -486,8 +488,11 @@ def evaluate_daeac_adversarial_model(
     model.eval()
     y_true, y_pred, probs_all, features_all, logits_all = [], [], [], [], []
     for batch in tqdm(loader, desc=desc, dynamic_ncols=True):
-        x, y = _source_batch(batch, device)
-        logits, features = model(x, return_embedding=True)
+        x, rr_features, y = _source_batch_with_optional_rr(batch, device)
+        if rr_features is None:
+            logits, features = model(x, return_embedding=True)
+        else:
+            logits, features = model(x, rr_features=rr_features, return_embedding=True)
         probs = torch.softmax(logits, dim=1)
         y_true.append(y.detach().cpu().numpy())
         y_pred.append(probs.argmax(dim=1).detach().cpu().numpy())
@@ -529,7 +534,7 @@ def build_daeac_dann_model(config: dict[str, Any], device: torch.device, init_ch
     return DAEACDANNModel(
         feature_extractor=base.feature_extractor,
         classifier=base.classifier,
-        feature_dim=int(config["model"]["feature_dim"]),
+        feature_dim=int(base.feature_dim),
         num_classes=int(config["data"]["num_classes"]),
         num_domains=int(cfg.get("num_domains", 2)),
         domain_hidden_dim=cfg.get("domain_hidden_dim"),
@@ -586,17 +591,32 @@ def _base_daeac_from_checkpoint(config: dict[str, Any], device: torch.device, ch
 
 
 def _classification_loss(dataset: DAEACDataset, config: dict[str, Any], cfg: dict[str, Any], device: torch.device) -> torch.nn.Module:
-    weights = _class_weights(dataset, int(config["data"]["num_classes"]), device) if bool(cfg.get("use_class_weights", True)) else None
+    weights = _class_weights(dataset, config, cfg, device) if bool(cfg.get("use_class_weights", True)) else None
     return build_daeac_classification_loss(cfg, int(config["data"]["num_classes"]), weights).to(device)
 
 
-def _class_weights(dataset, num_classes: int, device: torch.device) -> torch.Tensor | None:
+def _class_weights(dataset, config: dict[str, Any], cfg: dict[str, Any], device: torch.device) -> torch.Tensor | None:
     labels = _dataset_labels(dataset)
     if labels is None:
         return None
+    num_classes = int(config["data"]["num_classes"])
     counts = np.bincount(labels.astype(np.int64), minlength=num_classes).astype(np.float32)
     counts = np.maximum(counts, 1.0)
     weights = counts.sum() / (num_classes * counts)
+    mode = str(cfg.get("class_weight_mode", "inverse")).lower()
+    if mode in {"inverse", "balanced"}:
+        pass
+    elif mode in {"sqrt", "sqrt_inverse", "sqrt_balanced"}:
+        weights = np.sqrt(weights)
+    else:
+        raise ValueError(f"Unsupported class_weight_mode: {mode}")
+    if cfg.get("class_weight_cap") is not None:
+        weights = np.minimum(weights, float(cfg["class_weight_cap"]))
+    for name, scale in dict(cfg.get("class_weight_scales", {})).items():
+        class_names = list(config["data"]["class_names"])
+        if str(name) not in class_names:
+            raise ValueError(f"Unknown class in class_weight_scales: {name}")
+        weights[class_names.index(str(name))] *= float(scale)
     return torch.as_tensor(weights, dtype=torch.float32, device=device)
 
 
@@ -620,8 +640,35 @@ def _source_batch(batch, device: torch.device) -> tuple[torch.Tensor, torch.Tens
     return x.to(device, non_blocking=True), y.to(device, non_blocking=True)
 
 
+def _source_batch_with_optional_rr(batch, device: torch.device) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
+    if isinstance(batch, torch.Tensor):
+        raise ValueError("Source batch must include labels.")
+    if len(batch) >= 3:
+        x, rr_features, y = batch[0], batch[1], batch[2]
+        return x.to(device, non_blocking=True), rr_features.to(device, non_blocking=True), y.to(device, non_blocking=True)
+    x, y = batch[0], batch[1]
+    return x.to(device, non_blocking=True), None, y.to(device, non_blocking=True)
+
+
 def _target_batch(batch, device: torch.device) -> torch.Tensor:
     return _batch_x(batch, device)
+
+
+def _target_batch_with_optional_rr(batch, device: torch.device) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device, non_blocking=True), None
+    if len(batch) >= 3:
+        x, rr_features = batch[0], batch[1]
+        return x.to(device, non_blocking=True), rr_features.to(device, non_blocking=True)
+    return batch[0].to(device, non_blocking=True), None
+
+
+def _cat_optional_rr(rr_source: torch.Tensor | None, rr_target: torch.Tensor | None) -> torch.Tensor | None:
+    if rr_source is None and rr_target is None:
+        return None
+    if rr_source is None or rr_target is None:
+        raise ValueError("Source and target batches must both include rr_features for RR late-fusion DANN.")
+    return torch.cat([rr_source, rr_target], dim=0)
 
 
 def _batch_x(batch, device: torch.device) -> torch.Tensor:
@@ -711,7 +758,11 @@ def _update_v_measure(epoch_row, model, source_result, target_val_loader, device
     model.eval()
     target_logits = []
     for batch in target_val_loader:
-        logits, _ = model(_target_batch(batch, device), return_embedding=True)
+        x_t, rr_t = _target_batch_with_optional_rr(batch, device)
+        if rr_t is None:
+            logits, _ = model(x_t, return_embedding=True)
+        else:
+            logits, _ = model(x_t, rr_features=rr_t, return_embedding=True)
         target_logits.append(logits.detach().cpu().numpy())
     result = ericsson_v_measure(
         source_result["logits"],

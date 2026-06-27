@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from src.models.cdan import ConditionalMap
-from src.models.daeac_paper import ClassifierH, DAEACFeatureExtractor
+from src.models.daeac_paper import ClassifierH, DAEACFeatureExtractor, LateFusionClassifierH
 from src.models.grl import GradientReversalLayer
 
 
@@ -36,16 +36,29 @@ class DAEACDANNModel(nn.Module):
             nn.Linear(hidden_dim, int(num_domains)),
         )
 
-    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+    def extract_raw_features(self, x: torch.Tensor) -> torch.Tensor:
         return self.feature_extractor(x)
 
-    def class_logits(self, features: torch.Tensor) -> torch.Tensor:
-        logits, _ = self.classifier(features, return_logits=True)
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        raw_features = self.extract_raw_features(x)
+        return self.domain_features(raw_features)
+
+    def domain_features(self, raw_features: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.classifier, LateFusionClassifierH):
+            return self.classifier.extract_morph_features(raw_features)
+        return raw_features
+
+    def class_logits(self, raw_features: torch.Tensor, rr_features: torch.Tensor | None = None) -> torch.Tensor:
+        if isinstance(self.classifier, LateFusionClassifierH):
+            _, logits, _ = self.classifier(raw_features, rr_features, return_logits=True)
+            return logits
+        logits, _ = self.classifier(raw_features, return_logits=True)
         return logits
 
-    def forward(self, x: torch.Tensor, return_embedding: bool = False):
-        features = self.extract_features(x)
-        logits = self.class_logits(features)
+    def forward(self, x: torch.Tensor, rr_features: torch.Tensor | None = None, return_embedding: bool = False):
+        raw_features = self.extract_raw_features(x)
+        features = self.domain_features(raw_features)
+        logits = self.class_logits(raw_features, rr_features)
         if return_embedding:
             return logits, features
         return logits
