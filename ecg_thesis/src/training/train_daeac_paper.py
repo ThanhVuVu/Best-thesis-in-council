@@ -22,6 +22,7 @@ from src.models.daeac_paper import (
     LateFusionClassifierH,
 )
 from src.training.daeac_losses import (
+    DynamicWeightController,
     build_daeac_classification_loss,
     cluster_aligning_loss,
     compacting_loss,
@@ -186,6 +187,22 @@ def adapt_daeac(
         raise ValueError("Phase 5 task_align supports feature_key='features' or legacy 'gap_embed'.")
     if task_align_enabled and bool(task_align_cfg.get("target_positive_if_reliable", False)):
         raise ValueError("Phase 5 does not compute target task-positive features; set target_positive_if_reliable=false.")
+    dynamic_cfg = dict(config.get("rtd_daeac", {}).get("dynamic_weight", {}))
+    dynamic_weight_enabled = bool(dynamic_cfg.get("enabled", False))
+    dynamic_controller = (
+        DynamicWeightController(
+            beta1=float(cfg["beta1"]),
+            beta2=float(cfg["beta2"]),
+            ema_momentum=float(dynamic_cfg.get("ema_momentum", 0.9)),
+            rampup_epochs=int(dynamic_cfg.get("rampup_epochs", 10)),
+            clip_min=float(dynamic_cfg.get("clip_min", 0.0)),
+            clip_max=float(dynamic_cfg.get("clip_max", 0.1)),
+            eps=float(dynamic_cfg.get("eps", 1.0e-8)),
+        )
+        if dynamic_weight_enabled
+        else None
+    )
+    fixed_dynamic_state = DynamicWeightController(float(cfg["beta1"]), float(cfg["beta2"])).fixed_state()
     thresholds = _threshold_tensor(config, cfg, device)
     aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
     reliable_pseudo_enabled = _reliable_pseudo_enabled(config)
@@ -291,7 +308,16 @@ def adapt_daeac(
             reduction = str(cfg.get("cluster_loss_reduction", "sum"))
             loss_sep = separating_loss(mixed_for_loss, float(cfg["margin"]), distance_fn, device, reduction=reduction)
             loss_comp = compacting_loss(z_mix, y_mix, mixed_for_loss, distance_fn, device, reduction=reduction)
-            loss_total = loss_cls + float(cfg["beta1"]) * loss_align + float(cfg["beta2"]) * (loss_sep + loss_comp)
+            if dynamic_controller is not None:
+                dynamic_state = dynamic_controller.update(z_s, z_t, y_s, epoch=epoch + 1)
+            else:
+                dynamic_state = fixed_dynamic_state
+            loss_total = (
+                loss_cls
+                + dynamic_state.lambda_align * loss_align
+                + dynamic_state.lambda_sep * loss_sep
+                + dynamic_state.lambda_comp * loss_comp
+            )
 
             optimizer.zero_grad(set_to_none=True)
             loss_total.backward()
@@ -306,14 +332,22 @@ def adapt_daeac(
                     "loss_align": float(loss_align.detach().cpu()),
                     "loss_sep": float(loss_sep.detach().cpu()),
                     "loss_comp": float(loss_comp.detach().cpu()),
+                    "weighted_align": dynamic_state.lambda_align * float(loss_align.detach().cpu()),
+                    "weighted_sep": dynamic_state.lambda_sep * float(loss_sep.detach().cpu()),
+                    "weighted_comp": dynamic_state.lambda_comp * float(loss_comp.detach().cpu()),
+                    "weighted_main": dynamic_state.lambda_sep * float(loss_sep.detach().cpu())
+                    + dynamic_state.lambda_comp * float(loss_comp.detach().cpu()),
                     "pseudo_selected": float(len(selected_pseudo_t)),
                     "source_batch_size": float(len(y_s)),
                     "target_batch_size": float(len(selected_pseudo_t)),
+                    **(dynamic_state.as_dict() if dynamic_weight_enabled else {}),
                 }
             )
 
         row = _detailed_epoch_loss_summary(epoch_rows)
         loss_main = float(row["loss_sep"] + row["loss_comp"])
+        dynamic_epoch = _dynamic_epoch_summary(epoch_rows) if dynamic_weight_enabled else {}
+        weighted_epoch = _weighted_epoch_summary(epoch_rows)
         pseudo_diag = _pseudo_snapshot_diagnostics(pseudo_dataset, len(target_dataset), class_names, cfg)
         center_diag = _center_diagnostics(center_memory, class_names, distance_fn)
         row.update(
@@ -324,10 +358,8 @@ def adapt_daeac(
                 "source_samples_seen": int(sum(item["source_batch_size"] for item in epoch_rows)),
                 "target_pseudo_samples_seen": int(sum(item["target_batch_size"] for item in epoch_rows)),
                 "loss_main": loss_main,
-                "weighted_align": float(cfg["beta1"]) * float(row["loss_align"]),
-                "weighted_sep": float(cfg["beta2"]) * float(row["loss_sep"]),
-                "weighted_comp": float(cfg["beta2"]) * float(row["loss_comp"]),
-                "weighted_main": float(cfg["beta2"]) * loss_main,
+                **dynamic_epoch,
+                **weighted_epoch,
                 "lr": float(optimizer.param_groups[0]["lr"]),
                 "pseudo_counts": pseudo_counts.astype(int).tolist(),
                 "pseudo_snapshot_origin": pseudo_snapshot_origin,
@@ -368,17 +400,43 @@ def adapt_daeac(
         }
         for idx, count in enumerate(row["pseudo_counts"]):
             log_row[f"adapt/pseudo_count_{idx}"] = count
+        if dynamic_weight_enabled:
+            log_row.update(
+                {
+                    "dynamic/mmd": row["dynamic_mmd"],
+                    "dynamic/lda": row["dynamic_lda"],
+                    "dynamic/tau": row["dynamic_tau"],
+                    "dynamic/lambda_align": row["dynamic_lambda_align"],
+                    "dynamic/lambda_sep": row["dynamic_lambda_sep"],
+                    "dynamic/lambda_comp": row["dynamic_lambda_comp"],
+                }
+            )
         wandb_run.log(log_row, step=epoch)
         save_daeac_checkpoint(model, config, latest_path, epoch + 1, row)
+        dynamic_line = (
+            f"  dynamic: mmd={row['dynamic_mmd']:.6f} lda={row['dynamic_lda']:.6f} "
+            f"tau={row['dynamic_tau']:.6f} lambda_align={row['dynamic_lambda_align']:.6f} "
+            f"lambda_sep={row['dynamic_lambda_sep']:.6f} lambda_comp={row['dynamic_lambda_comp']:.6f}\n"
+            if dynamic_weight_enabled
+            else ""
+        )
+        weighted_line = (
+            f"  weighted: align={row['weighted_align']:.6f} "
+            f"sep={row['weighted_sep']:.6f} comp={row['weighted_comp']:.6f} "
+            f"main={row['weighted_main']:.6f}\n"
+            if dynamic_weight_enabled
+            else f"  weighted: beta1*align={row['weighted_align']:.6f} "
+            f"beta2*sep={row['weighted_sep']:.6f} beta2*comp={row['weighted_comp']:.6f} "
+            f"beta2*main={row['weighted_main']:.6f}\n"
+        )
         print(
             f"[uda epoch {epoch + 1}/{cfg['epochs']}] steps={row['iterations']} global_step={global_step} "
             f"lr={row['lr']:.8g} seconds={row['epoch_seconds']:.2f}\n"
             f"  losses(mean): total={row['loss']:.6f} cls={row['loss_cls']:.6f} "
             f"align={row['loss_align']:.6f} sep={row['loss_sep']:.6f} "
             f"comp={row['loss_comp']:.6f} main={row['loss_main']:.6f}\n"
-            f"  weighted: beta1*align={row['weighted_align']:.6f} "
-            f"beta2*sep={row['weighted_sep']:.6f} beta2*comp={row['weighted_comp']:.6f} "
-            f"beta2*main={row['weighted_main']:.6f}\n"
+            f"{weighted_line}"
+            f"{dynamic_line}"
             f"  pseudo: snapshot={row['pseudo_snapshot_origin']} selected={row['pseudo_total']}/{row['target_total']} "
             f"coverage={row['pseudo_coverage']:.6f} active_classes={row['pseudo_active_classes']} "
             f"mean_conf={row['pseudo_mean_confidence']:.6f} mean_entropy={row['pseudo_mean_normalized_entropy']:.6f}\n"
@@ -1265,6 +1323,27 @@ def _detailed_epoch_loss_summary(rows: list[dict[str, float]]) -> dict[str, floa
         result[f"{key}_max"] = float(values.max())
     result["pseudo_selected_per_batch"] = float(np.mean([row["pseudo_selected"] for row in rows]))
     return result
+
+
+def _dynamic_epoch_summary(rows: list[dict[str, float]]) -> dict[str, float]:
+    keys = (
+        "dynamic_mmd",
+        "dynamic_lda",
+        "dynamic_tau",
+        "dynamic_lambda_align",
+        "dynamic_lambda_sep",
+        "dynamic_lambda_comp",
+    )
+    if not rows:
+        return {key: 0.0 for key in keys}
+    return {key: float(np.mean([float(row[key]) for row in rows])) for key in keys}
+
+
+def _weighted_epoch_summary(rows: list[dict[str, float]]) -> dict[str, float]:
+    keys = ("weighted_align", "weighted_sep", "weighted_comp", "weighted_main")
+    if not rows:
+        return {key: 0.0 for key in keys}
+    return {key: float(np.mean([float(row[key]) for row in rows])) for key in keys}
 
 
 def _pseudo_snapshot_diagnostics(

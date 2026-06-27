@@ -1,10 +1,166 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+
+@dataclass
+class DynamicWeightState:
+    mmd: float
+    lda: float
+    tau: float
+    lambda_align: float
+    lambda_sep: float
+    lambda_comp: float
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "dynamic_mmd": self.mmd,
+            "dynamic_lda": self.lda,
+            "dynamic_tau": self.tau,
+            "dynamic_lambda_align": self.lambda_align,
+            "dynamic_lambda_sep": self.lambda_sep,
+            "dynamic_lambda_comp": self.lambda_comp,
+        }
+
+
+class DynamicWeightController:
+    """EMA-smoothed scalar controller for DAEAC alignment/separation weights."""
+
+    def __init__(
+        self,
+        beta1: float,
+        beta2: float,
+        ema_momentum: float = 0.9,
+        rampup_epochs: int = 10,
+        clip_min: float = 0.0,
+        clip_max: float = 0.1,
+        eps: float = 1.0e-8,
+    ) -> None:
+        self.beta1 = float(beta1)
+        self.beta2 = float(beta2)
+        self.ema_momentum = float(ema_momentum)
+        self.rampup_epochs = max(int(rampup_epochs), 1)
+        self.clip_min = float(clip_min)
+        self.clip_max = float(clip_max)
+        self.eps = float(eps)
+        if not 0.0 <= self.ema_momentum < 1.0:
+            raise ValueError("DynamicWeightController ema_momentum must satisfy 0 <= momentum < 1.")
+        if self.clip_min > self.clip_max:
+            raise ValueError("DynamicWeightController requires clip_min <= clip_max.")
+        self._mmd_ema: float | None = None
+        self._lda_ema: float | None = None
+        self._mmd_min: float | None = None
+        self._mmd_max: float | None = None
+        self._lda_min: float | None = None
+        self._lda_max: float | None = None
+
+    def update(self, z_s: torch.Tensor, z_t: torch.Tensor, y_s: torch.Tensor, epoch: int) -> DynamicWeightState:
+        if z_s.ndim != 2:
+            raise ValueError(f"Dynamic weighting expects source features shaped [B, D], got {tuple(z_s.shape)}.")
+        if z_t.ndim != 2:
+            raise ValueError(f"Dynamic weighting expects target features shaped [B, D], got {tuple(z_t.shape)}.")
+        if y_s.ndim != 1:
+            raise ValueError(f"Dynamic weighting expects source labels shaped [B], got {tuple(y_s.shape)}.")
+        if z_s.shape[0] != y_s.shape[0]:
+            raise ValueError(f"Dynamic weighting batch mismatch: z_s={tuple(z_s.shape)}, y_s={tuple(y_s.shape)}.")
+        if z_s.shape[1] != z_t.shape[1]:
+            raise ValueError(f"Dynamic weighting feature mismatch: z_s={tuple(z_s.shape)}, z_t={tuple(z_t.shape)}.")
+
+        with torch.no_grad():
+            source = z_s.detach().float()
+            target = z_t.detach().float()
+            labels = y_s.detach().long()
+            mmd_raw = self._mean_feature_distance(source, target)
+            lda_raw = self._source_lda(source, labels)
+
+        mmd = self._update_ema("mmd", mmd_raw)
+        lda = self._update_ema("lda", lda_raw)
+        mmd_norm = self._normalize("mmd", mmd)
+        lda_norm = self._normalize("lda", lda)
+        tau = mmd_norm / (mmd_norm + (1.0 - lda_norm) + self.eps)
+        tau = min(max(float(tau), 0.0), 1.0)
+        ramp = min(1.0, max(float(epoch), 0.0) / float(self.rampup_epochs))
+        lambda_align = self._clip(self.beta1 * ramp * tau)
+        lambda_sep = self._clip(self.beta2 * ramp * (1.0 - tau))
+        lambda_comp = self._clip(self.beta2 * ramp * (1.0 - tau))
+        return DynamicWeightState(
+            mmd=float(mmd),
+            lda=float(lda),
+            tau=float(tau),
+            lambda_align=float(lambda_align),
+            lambda_sep=float(lambda_sep),
+            lambda_comp=float(lambda_comp),
+        )
+
+    def fixed_state(self) -> DynamicWeightState:
+        return DynamicWeightState(
+            mmd=0.0,
+            lda=0.0,
+            tau=0.0,
+            lambda_align=self.beta1,
+            lambda_sep=self.beta2,
+            lambda_comp=self.beta2,
+        )
+
+    def _mean_feature_distance(self, source: torch.Tensor, target: torch.Tensor) -> float:
+        if source.numel() == 0 or target.numel() == 0:
+            return 0.0
+        value = torch.linalg.vector_norm(source.mean(dim=0) - target.mean(dim=0), ord=2)
+        return self._finite_float(value)
+
+    def _source_lda(self, source: torch.Tensor, labels: torch.Tensor) -> float:
+        if source.numel() == 0 or labels.numel() == 0:
+            return 0.0
+        global_mean = source.mean(dim=0)
+        s_between = source.new_zeros(())
+        s_within = source.new_zeros(())
+        for cls in torch.unique(labels):
+            mask = labels == cls
+            if not bool(mask.any()):
+                continue
+            class_features = source[mask]
+            class_mean = class_features.mean(dim=0)
+            s_between = s_between + float(class_features.shape[0]) * torch.sum((class_mean - global_mean) ** 2)
+            s_within = s_within + torch.sum((class_features - class_mean) ** 2)
+        value = s_between / (s_within + self.eps)
+        return self._finite_float(value)
+
+    def _update_ema(self, name: str, raw_value: float) -> float:
+        value = float(raw_value)
+        ema_attr = f"_{name}_ema"
+        previous = getattr(self, ema_attr)
+        ema = value if previous is None else self.ema_momentum * float(previous) + (1.0 - self.ema_momentum) * value
+        setattr(self, ema_attr, ema)
+        min_attr = f"_{name}_min"
+        max_attr = f"_{name}_max"
+        current_min = getattr(self, min_attr)
+        current_max = getattr(self, max_attr)
+        setattr(self, min_attr, ema if current_min is None else min(float(current_min), ema))
+        setattr(self, max_attr, ema if current_max is None else max(float(current_max), ema))
+        return float(ema)
+
+    def _normalize(self, name: str, value: float) -> float:
+        min_value = getattr(self, f"_{name}_min")
+        max_value = getattr(self, f"_{name}_max")
+        if min_value is None or max_value is None:
+            return 0.0
+        normalized = (float(value) - float(min_value)) / (float(max_value) - float(min_value) + self.eps)
+        return min(max(normalized, 0.0), 1.0)
+
+    def _clip(self, value: float) -> float:
+        return min(max(float(value), self.clip_min), self.clip_max)
+
+    @staticmethod
+    def _finite_float(value: torch.Tensor | float) -> float:
+        scalar = float(value.detach().cpu()) if isinstance(value, torch.Tensor) else float(value)
+        if scalar != scalar or scalar in {float("inf"), float("-inf")}:
+            return 0.0
+        return scalar
 
 
 class CustomFocalLoss(nn.Module):
