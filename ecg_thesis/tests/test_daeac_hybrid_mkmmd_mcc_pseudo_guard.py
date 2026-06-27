@@ -91,6 +91,24 @@ class HybridMkmmdMccPseudoGuardTest(unittest.TestCase):
 
         self.assertEqual(keep.tolist(), [False, True, True, True, True])
 
+    def test_min_per_class_fills_minority_from_soft_threshold_top_confidence(self) -> None:
+        confident = torch.tensor([True, True, True, False, False, False, False])
+        pseudo = torch.tensor([0, 0, 0, 1, 1, 1, 2])
+        confidence = torch.tensor([0.99, 0.98, 0.97, 0.82, 0.91, 0.79, 0.86])
+        margin = torch.ones(7)
+        cfg = {
+            "pseudo_filter": {
+                "enabled": True,
+                "max_per_class": {"N": 2, "S": 2, "V": 2},
+                "min_per_class": {"S": 2, "V": 1},
+                "min_fill_thresholds": {"S": 0.80, "V": 0.85},
+            }
+        }
+
+        keep = _apply_pseudo_filter(confident, pseudo, confidence, margin, cfg, ["N", "S", "V"], epoch=0)
+
+        self.assertEqual(keep.tolist(), [True, True, False, True, True, False, True])
+
     def test_collapse_guard_triggers_on_dominant_class_and_low_s(self) -> None:
         keep = torch.tensor([True] * 9 + [False])
         pseudo = torch.tensor([0, 0, 0, 0, 0, 0, 0, 0, 2, 1])

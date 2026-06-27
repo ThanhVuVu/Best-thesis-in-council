@@ -322,6 +322,30 @@ def _apply_pseudo_filter(
         _, order = torch.sort(confidence[cls_idx], descending=True)
         drop = cls_idx[order[int(quota) :]]
         keep[drop] = False
+    min_per_class = {str(k): int(v) for k, v in dict(filter_cfg.get("min_per_class", {})).items()}
+    min_fill_thresholds = {str(k): float(v) for k, v in dict(filter_cfg.get("min_fill_thresholds", {})).items()}
+    min_fill_margin = {str(k): float(v) for k, v in dict(filter_cfg.get("min_fill_margin", {})).items()}
+    for class_name, minimum in min_per_class.items():
+        if class_name not in class_names or int(minimum) <= 0:
+            continue
+        cls = class_names.index(class_name)
+        current = int((keep & (pseudo == cls)).sum().item())
+        target = int(minimum)
+        if class_name in max_per_class and int(max_per_class[class_name]) >= 0:
+            target = min(target, int(max_per_class[class_name]))
+        if current >= target:
+            continue
+        threshold = float(min_fill_thresholds.get(class_name, 0.0))
+        margin_threshold = float(min_fill_margin.get(class_name, float("-inf")))
+        candidates = torch.nonzero(
+            (~keep) & (pseudo == cls) & (confidence >= threshold) & (margin >= margin_threshold),
+            as_tuple=False,
+        ).flatten()
+        if candidates.numel() == 0:
+            continue
+        _, order = torch.sort(confidence[candidates], descending=True)
+        fill = candidates[order[: target - current]]
+        keep[fill] = True
     return keep
 
 

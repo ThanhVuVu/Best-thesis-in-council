@@ -21,6 +21,12 @@ adaptation:
       N: 48
       S: 64
       V: 64
+    min_per_class:
+      S: 8
+      V: 8
+    min_fill_thresholds:
+      S: 0.80
+      V: 0.85
   pseudo_collapse_guard:
     enabled: true
     max_class_ratio: 0.85
