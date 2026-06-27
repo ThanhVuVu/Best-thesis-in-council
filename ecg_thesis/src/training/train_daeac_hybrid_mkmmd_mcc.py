@@ -118,8 +118,8 @@ def train_daeac_hybrid_mkmmd_mcc(
             z_t_all = target_layers["gap_embed"]
             classifier_z_s = _classifier_features_from_layers(source_layers)
             classifier_z_t = _classifier_features_from_layers(target_layers)
-            logits_s, _ = model.classifier(classifier_z_s, rr_s, return_logits=True)
-            logits_t, _ = model.classifier(classifier_z_t, rr_t, return_logits=True)
+            logits_s, _ = _classifier_logits_probs(model.classifier, classifier_z_s, rr_s)
+            logits_t, _ = _classifier_logits_probs(model.classifier, classifier_z_t, rr_t)
             loss_cls = cls_loss_fn(logits_s, y_s)
             loss_mmd, layer_losses = _multi_layer_mkmmd_loss(source_layers, target_layers, layer_weights, gammas, beta)
             loss_mcc, mcc_diag = minimum_class_confusion_loss(
@@ -129,7 +129,7 @@ def train_daeac_hybrid_mkmmd_mcc(
             )
 
             with torch.no_grad():
-                _, probs_t = aux_classifier(classifier_z_t.detach(), rr_t, return_logits=True)
+                _, probs_t = _classifier_logits_probs(aux_classifier, classifier_z_t.detach(), rr_t)
                 conf_t, pseudo_t = probs_t.max(dim=1)
                 top2 = probs_t.topk(k=min(2, probs_t.size(1)), dim=1).values
                 margin_t = top2[:, 0] - top2[:, 1] if top2.size(1) > 1 else top2[:, 0]
@@ -399,6 +399,15 @@ def _multi_layer_mkmmd_loss(
 
 def _classifier_features_from_layers(layers: dict[str, torch.Tensor]) -> torch.Tensor:
     return layers.get("pre_fusion_gap", layers["gap_embed"])
+
+
+def _classifier_logits_probs(classifier, features: torch.Tensor, rr_features: torch.Tensor | None) -> tuple[torch.Tensor, torch.Tensor]:
+    output = classifier(features, rr_features, return_logits=True) if rr_features is not None else classifier(features, return_logits=True)
+    if len(output) == 3:
+        _, logits, probs = output
+        return logits, probs
+    logits, probs = output
+    return logits, probs
 
 
 def _cycle(loader: DataLoader):

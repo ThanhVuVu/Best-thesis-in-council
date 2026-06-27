@@ -11,9 +11,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.models.daeac_paper import LateFusionClassifierH
+from src.models.daeac_paper import ClassifierH, LateFusionClassifierH
 from src.training.train_daeac_paper import _unpack_input_batch, _unpack_source_batch
-from src.training.train_daeac_hybrid_mkmmd_mcc import _apply_pseudo_filter, _classifier_features_from_layers, _pseudo_collapse_guard
+from src.training.train_daeac_hybrid_mkmmd_mcc import (
+    _apply_pseudo_filter,
+    _classifier_features_from_layers,
+    _classifier_logits_probs,
+    _pseudo_collapse_guard,
+)
 
 
 class HybridMkmmdMccPseudoGuardTest(unittest.TestCase):
@@ -52,6 +57,18 @@ class HybridMkmmdMccPseudoGuardTest(unittest.TestCase):
         self.assertTrue(torch.equal(selected, pre_fusion_gap))
         self.assertEqual(tuple(fallback.shape), (2, 128))
         self.assertTrue(torch.equal(fallback, gap_embed))
+
+    def test_classifier_logits_probs_normalizes_late_and_plain_outputs(self) -> None:
+        plain = ClassifierH(feature_dim=128, num_classes=3)
+        late = LateFusionClassifierH(feature_dim=256, num_classes=3, rr_dim=7, fc1_dim=128, fc2_dim=64)
+
+        logits_plain, probs_plain = _classifier_logits_probs(plain, torch.zeros(2, 128), None)
+        logits_late, probs_late = _classifier_logits_probs(late, torch.zeros(2, 256), torch.ones(2, 7))
+
+        self.assertEqual(tuple(logits_plain.shape), (2, 3))
+        self.assertEqual(tuple(probs_plain.shape), (2, 3))
+        self.assertEqual(tuple(logits_late.shape), (2, 3))
+        self.assertEqual(tuple(probs_late.shape), (2, 3))
 
     def test_pseudo_filter_is_noop_when_disabled(self) -> None:
         confident = torch.tensor([True, True, True])
