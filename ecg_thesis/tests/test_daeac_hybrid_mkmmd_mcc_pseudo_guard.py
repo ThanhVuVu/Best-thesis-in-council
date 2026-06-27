@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.models.daeac_paper import LateFusionClassifierH
 from src.training.train_daeac_paper import _unpack_input_batch, _unpack_source_batch
-from src.training.train_daeac_hybrid_mkmmd_mcc import _apply_pseudo_filter, _pseudo_collapse_guard
+from src.training.train_daeac_hybrid_mkmmd_mcc import _apply_pseudo_filter, _classifier_features_from_layers, _pseudo_collapse_guard
 
 
 class HybridMkmmdMccPseudoGuardTest(unittest.TestCase):
@@ -40,6 +40,18 @@ class HybridMkmmdMccPseudoGuardTest(unittest.TestCase):
 
         self.assertEqual(incompatible.missing_keys, [])
         self.assertEqual(incompatible.unexpected_keys, [])
+
+    def test_classifier_features_use_pre_fusion_gap_when_available(self) -> None:
+        gap_embed = torch.zeros(2, 128)
+        pre_fusion_gap = torch.ones(2, 256)
+
+        selected = _classifier_features_from_layers({"gap_embed": gap_embed, "pre_fusion_gap": pre_fusion_gap})
+        fallback = _classifier_features_from_layers({"gap_embed": gap_embed})
+
+        self.assertEqual(tuple(selected.shape), (2, 256))
+        self.assertTrue(torch.equal(selected, pre_fusion_gap))
+        self.assertEqual(tuple(fallback.shape), (2, 128))
+        self.assertTrue(torch.equal(fallback, gap_embed))
 
     def test_pseudo_filter_is_noop_when_disabled(self) -> None:
         confident = torch.tensor([True, True, True])
