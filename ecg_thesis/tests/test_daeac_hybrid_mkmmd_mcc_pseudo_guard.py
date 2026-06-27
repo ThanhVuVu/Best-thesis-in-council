@@ -10,10 +10,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.training.train_daeac_paper import _unpack_input_batch, _unpack_source_batch
 from src.training.train_daeac_hybrid_mkmmd_mcc import _apply_pseudo_filter, _pseudo_collapse_guard
 
 
 class HybridMkmmdMccPseudoGuardTest(unittest.TestCase):
+    def test_late_fusion_batches_keep_rr_features(self) -> None:
+        device = torch.device("cpu")
+        x = torch.zeros(2, 1, 1, 128)
+        rr = torch.ones(2, 7)
+        y = torch.tensor([0, 1])
+
+        x_s, rr_s, y_s = _unpack_source_batch((x, rr, y), device)
+        x_t, rr_t = _unpack_input_batch((x, rr, torch.tensor([3, 4])), device)
+
+        self.assertEqual(tuple(x_s.shape), (2, 1, 1, 128))
+        self.assertEqual(tuple(rr_s.shape), (2, 7))
+        self.assertEqual(y_s.tolist(), [0, 1])
+        self.assertEqual(tuple(x_t.shape), (2, 1, 1, 128))
+        self.assertEqual(tuple(rr_t.shape), (2, 7))
+
     def test_pseudo_filter_is_noop_when_disabled(self) -> None:
         confident = torch.tensor([True, True, True])
         pseudo = torch.tensor([0, 0, 1])

@@ -34,12 +34,20 @@ def main() -> None:
     input_key = str(config["data"].get("input_key", "auto"))
     label_key = str(config["data"].get("label_key", "y"))
     class_names = list(config["data"]["class_names"])
+    rr_mode = str(config["data"].get("rr_mode", "real"))
+    rr_features_key = str(config["data"].get("rr_features_key", "rr_features"))
+    return_rr_features = bool(config["data"].get("return_rr_features", False))
+    morphology_only = bool(config["data"].get("morphology_only", False))
     source_ds, val_ds, split_summary = load_daeac_source_fit_val(
         cfg_path(config, "data", "source_train"),
         cfg_path(config, "data", "source_eval"),
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        rr_mode=rr_mode,
+        rr_features_key=rr_features_key,
+        return_rr_features=return_rr_features,
+        morphology_only=morphology_only,
     )
     print(f"DAEAC source fit/validation split: {split_summary}")
     target_ds = DAEACTargetUnlabeledDataset(
@@ -47,6 +55,10 @@ def main() -> None:
         input_key=input_key,
         label_key=label_key,
         class_names=class_names,
+        rr_mode=rr_mode,
+        rr_features_key=rr_features_key,
+        return_rr_features=return_rr_features,
+        morphology_only=morphology_only,
     )
     source_ds = subset_first(source_ds, args.max_source_samples)
     val_ds = subset_first(val_ds, args.max_val_samples)

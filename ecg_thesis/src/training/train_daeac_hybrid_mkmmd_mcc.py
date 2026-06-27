@@ -31,6 +31,8 @@ from src.training.train_daeac_paper import (
     _class_weights,
     _cluster_align_loss,
     _threshold_tensor,
+    _unpack_input_batch,
+    _unpack_source_batch,
     batch_centers,
     build_daeac_model,
     compute_global_source_centers,
@@ -111,18 +113,16 @@ def train_daeac_hybrid_mkmmd_mcc(
         epoch_rows: list[dict[str, float]] = []
         pseudo_counts = np.zeros(center_memory.num_classes, dtype=np.int64)
         target_pred_counts = np.zeros(center_memory.num_classes, dtype=np.int64)
-        for x_s, y_s in source_loader:
-            x_t = _batch_x(next(target_iter))
-            x_s = x_s.to(device)
-            y_s = y_s.to(device)
-            x_t = x_t.to(device)
+        for source_batch in source_loader:
+            x_s, rr_s, y_s = _unpack_source_batch(source_batch, device)
+            x_t, rr_t = _unpack_input_batch(next(target_iter), device)
 
-            source_layers = model.extract_feature_layers(x_s)
-            target_layers = model.extract_feature_layers(x_t)
+            source_layers = model.extract_feature_layers(x_s, rr_features=rr_s)
+            target_layers = model.extract_feature_layers(x_t, rr_features=rr_t)
             z_s = source_layers["gap_embed"]
             z_t_all = target_layers["gap_embed"]
-            logits_s, _ = model.classifier(z_s, return_logits=True)
-            logits_t, _ = model.classifier(z_t_all, return_logits=True)
+            logits_s, _ = model.classifier(z_s, rr_s, return_logits=True)
+            logits_t, _ = model.classifier(z_t_all, rr_t, return_logits=True)
             loss_cls = cls_loss_fn(logits_s, y_s)
             loss_mmd, layer_losses = _multi_layer_mkmmd_loss(source_layers, target_layers, layer_weights, gammas, beta)
             loss_mcc, mcc_diag = minimum_class_confusion_loss(
@@ -132,7 +132,7 @@ def train_daeac_hybrid_mkmmd_mcc(
             )
 
             with torch.no_grad():
-                _, probs_t = aux_classifier(z_t_all.detach(), return_logits=True)
+                _, probs_t = aux_classifier(z_t_all.detach(), rr_t, return_logits=True)
                 conf_t, pseudo_t = probs_t.max(dim=1)
                 top2 = probs_t.topk(k=min(2, probs_t.size(1)), dim=1).values
                 margin_t = top2[:, 0] - top2[:, 1] if top2.size(1) > 1 else top2[:, 0]
@@ -398,10 +398,6 @@ def _multi_layer_mkmmd_loss(
         any_layer = next(iter(source_layers.values()))
         total = any_layer.sum() * 0.0
     return total, losses
-
-
-def _batch_x(batch):
-    return batch[0] if isinstance(batch, (tuple, list)) else batch
 
 
 def _cycle(loader: DataLoader):
