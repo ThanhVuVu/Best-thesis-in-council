@@ -1,0 +1,23 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_se_latefusion_rr_nsv_sqrtw
+    tags: ["phase6", "daeac", "se", "rr_late_fusion", "nsv", "sqrt_weight"]
+
+paths:
+  output_dir: outputs/phase6_daeac_se_latefusion_rr_nsv_sqrtw
+
+model:
+  attention: se
+
+training:
+  checkpoint_prefix: daeac_se_rr_nsv_sqrtw_base
+  use_class_weights: true
+  class_weight_mode: sqrt
+
+adaptation:
+  checkpoint_prefix: daeac_se_rr_nsv_sqrtw_uda
+  init_checkpoint: outputs/phase6_daeac_se_latefusion_rr_nsv_sqrtw/checkpoints/daeac_se_rr_nsv_sqrtw_base_best.pt
+  use_class_weights: true
+  class_weight_mode: sqrt

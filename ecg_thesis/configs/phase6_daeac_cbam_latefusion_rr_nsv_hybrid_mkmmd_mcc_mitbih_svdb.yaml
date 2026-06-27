@@ -1,0 +1,17 @@
+extends: phase6_daeac_cbam_latefusion_rr_nsv_hybrid_mkmmd_mcc_mitbih_incart.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_cbam_latefusion_rr_nsv_hybrid_mkmmd_mcc_mitbih_svdb
+    tags: ["phase6", "daeac", "cbam", "rr_late_fusion", "nsv", "hybrid_mkmmd_mcc", "mitbih_svdb"]
+
+paths:
+  output_dir: outputs/phase6_daeac_cbam_latefusion_rr_nsv_hybrid_mkmmd_mcc_mitbih_svdb
+
+data:
+  target_unlabeled: data/processed/phase6_daeac_record_splits_nsv/svdb_train.npz
+  target_val: data/processed/phase6_daeac_record_splits_nsv/svdb_val.npz
+  target_test: data/processed/phase6_daeac_record_splits_nsv/svdb_test.npz
+
+adaptation:
+  checkpoint_prefix: daeac_cbam_rr_nsv_hybrid_mkmmd_mcc_mitbih_svdb

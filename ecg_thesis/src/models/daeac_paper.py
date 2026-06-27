@@ -113,6 +113,41 @@ class FrequencyConvolutionBlockAttention2D(nn.Module):
         return descriptor.view(b, c, self.frequency_modes)
 
 
+class CBAMLayer2D(nn.Module):
+    """CBAM attention for DAEAC's [B, C, 1, T] feature maps."""
+
+    def __init__(self, channels: int, reduction: int = 16, spatial_kernel_size: int = 7):
+        super().__init__()
+        if spatial_kernel_size <= 0 or spatial_kernel_size % 2 == 0:
+            raise ValueError("spatial_kernel_size must be a positive odd integer.")
+        hidden = max(channels // reduction, 1)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.channel_mlp = nn.Sequential(
+            nn.Linear(channels, hidden, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, channels, bias=False),
+        )
+        self.spatial = nn.Conv2d(
+            2,
+            1,
+            kernel_size=(1, spatial_kernel_size),
+            padding=(0, spatial_kernel_size // 2),
+            bias=False,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        avg_scale = self.channel_mlp(self.avg_pool(x).flatten(1))
+        max_scale = self.channel_mlp(self.max_pool(x).flatten(1))
+        channel_scale = torch.sigmoid(avg_scale + max_scale).view(x.shape[0], x.shape[1], 1, 1)
+        x = x * channel_scale.expand_as(x)
+
+        spatial_avg = x.mean(dim=1, keepdim=True)
+        spatial_max = x.amax(dim=1, keepdim=True)
+        spatial_scale = torch.sigmoid(self.spatial(torch.cat([spatial_avg, spatial_max], dim=1)))
+        return x * spatial_scale.expand_as(x)
+
+
 class ASPP2D(nn.Module):
     """Four-branch ASPP used by the paper reference implementation.
 
@@ -174,6 +209,12 @@ class ASPPSEBlock(nn.Module):
         attention_type = attention_type.lower()
         if attention_type == "se":
             self.se = SELayer2D(self.aspp.out_channels, reduction=se_reduction)
+        elif attention_type == "cbam":
+            self.se = CBAMLayer2D(
+                self.aspp.out_channels,
+                reduction=se_reduction,
+                spatial_kernel_size=fcba_spatial_kernel_size,
+            )
         elif attention_type == "fcba":
             self.se = FrequencyConvolutionBlockAttention2D(
                 self.aspp.out_channels,
@@ -182,7 +223,7 @@ class ASPPSEBlock(nn.Module):
                 spatial_kernel_size=fcba_spatial_kernel_size,
             )
         else:
-            raise ValueError(f"Unknown DAEAC attention_type={attention_type!r}; expected 'se' or 'fcba'.")
+            raise ValueError(f"Unknown DAEAC attention_type={attention_type!r}; expected 'se', 'cbam', or 'fcba'.")
 
     @property
     def out_channels(self) -> int:

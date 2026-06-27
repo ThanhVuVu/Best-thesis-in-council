@@ -1,0 +1,17 @@
+extends: phase6_daeac_se_latefusion_rr_nsv_hybrid_mkmmd_mcc_ds1_ds2.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_se_latefusion_rr_nsv_hybrid_mkmmd_mcc_ds1_incart
+    tags: ["phase6", "daeac", "se", "rr_late_fusion", "nsv", "hybrid_mkmmd_mcc", "ds1_incart"]
+
+paths:
+  output_dir: outputs/phase6_daeac_se_latefusion_rr_nsv_hybrid_mkmmd_mcc_ds1_incart
+
+data:
+  target_unlabeled: data/processed/phase6_daeac_record_splits_nsv/incart_train.npz
+  target_val: data/processed/phase6_daeac_record_splits_nsv/incart_val.npz
+  target_test: data/processed/phase6_daeac_record_splits_nsv/incart_test.npz
+
+adaptation:
+  checkpoint_prefix: daeac_se_rr_nsv_hybrid_mkmmd_mcc_ds1_incart

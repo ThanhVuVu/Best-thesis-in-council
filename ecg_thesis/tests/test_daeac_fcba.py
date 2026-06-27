@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from src.models.daeac_paper import (
+    CBAMLayer2D,
     ClassifierH,
     DAEACNetwork,
     FrequencyConvolutionBlockAttention2D,
@@ -24,6 +25,28 @@ class DAEACFCBATests(unittest.TestCase):
 
         self.assertEqual(tuple(y.shape), tuple(x.shape))
         self.assertTrue(torch.isfinite(y).all())
+
+    def test_cbam_preserves_shape_and_outputs_finite_values(self) -> None:
+        module = CBAMLayer2D(channels=16, reduction=4, spatial_kernel_size=7)
+        x = torch.randn(2, 16, 1, 128)
+
+        y = module(x)
+
+        self.assertEqual(tuple(y.shape), tuple(x.shape))
+        self.assertTrue(torch.isfinite(y).all())
+
+    def test_cbam_network_forward_shapes(self) -> None:
+        model = DAEACNetwork(attention_type="cbam")
+        x = torch.randn(2, 1, 3, 128)
+
+        features, logits, probs = model(x, return_logits=True)
+
+        self.assertEqual(tuple(features.shape), (2, 256))
+        self.assertEqual(tuple(logits.shape), (2, 4))
+        self.assertEqual(tuple(probs.shape), (2, 4))
+        self.assertTrue(torch.allclose(probs.sum(dim=1), torch.ones(2), atol=1e-6))
+        self.assertIsInstance(model.feature_extractor.aspp_se_1.se, CBAMLayer2D)
+        self.assertIsInstance(model.classifier, ClassifierH)
 
     def test_fcba_network_forward_shapes(self) -> None:
         model = DAEACNetwork(attention_type="fcba")
