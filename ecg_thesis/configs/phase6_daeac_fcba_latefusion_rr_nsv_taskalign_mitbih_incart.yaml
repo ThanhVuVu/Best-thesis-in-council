@@ -10,6 +10,10 @@ paths:
 
 adaptation:
   checkpoint_prefix: daeac_fcba_rr_nsv_taskalign_mitbih_incart
+  pseudo_thresholds:
+    N: 0.999
+    S: 0.95
+    V: 0.99
 
 rtd_daeac:
   task_align:
