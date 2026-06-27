@@ -1,0 +1,15 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_daeac_ds1_svdb.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_mcc_ds1_svdb
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "mcc", "ds1_svdb"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mcc_ds1_svdb
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_mcc_ds1_svdb
+  mcc:
+    mu: 1.0
+    temperature: 1.0

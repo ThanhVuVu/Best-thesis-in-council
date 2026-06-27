@@ -12,6 +12,9 @@ from src.training.daeac_losses import weighted_cross_entropy_from_logits
 from src.training.mcc_loss import minimum_class_confusion_loss
 from src.training.train_daeac_paper import (
     _class_weights,
+    _forward_model_logits,
+    _unpack_input_batch,
+    _unpack_source_batch,
     build_daeac_model,
     load_daeac_checkpoint,
     evaluate_daeac_model,
@@ -70,17 +73,15 @@ def train_daeac_mcc(
         # Target-driven epoch: every target sample is consumed exactly once.
         # Source batches are cycled only when the labeled source is smaller.
         for target_batch in target_loader:
-            x_s, y_s = next(source_iter)
-            x_t = _batch_x(target_batch)
-            x_s = x_s.to(device)
-            y_s = y_s.to(device)
-            x_t = x_t.to(device)
+            x_s, rr_s, y_s = _unpack_source_batch(next(source_iter), device)
+            x_t, rr_t = _unpack_input_batch(target_batch, device)
 
             # A single mixed-domain forward gives shared BatchNorm layers one
             # balanced view of source and target instead of updating their
             # running statistics sequentially with target always last.
             mixed_x = torch.cat((x_s, x_t), dim=0)
-            _, mixed_logits, _ = model(mixed_x, return_logits=True)
+            mixed_rr = _cat_optional_rr(rr_s, rr_t)
+            _, mixed_logits, _ = _forward_model_logits(model, mixed_x, rr_features=mixed_rr)
             logits_s, logits_t = torch.split(mixed_logits, (x_s.size(0), x_t.size(0)), dim=0)
             loss_cls = weighted_cross_entropy_from_logits(logits_s, y_s, class_weights)
             loss_mcc, diagnostics = minimum_class_confusion_loss(
@@ -184,8 +185,15 @@ def _soft_confusion_entries(matrix: torch.Tensor, class_names: list[str]) -> dic
     return values
 
 
-def _batch_x(batch):
-    return batch[0] if isinstance(batch, (tuple, list)) else batch
+def _cat_optional_rr(
+    rr_s: torch.Tensor | None,
+    rr_t: torch.Tensor | None,
+) -> torch.Tensor | None:
+    if rr_s is None and rr_t is None:
+        return None
+    if rr_s is None or rr_t is None:
+        raise ValueError("Source and target batches must both provide rr_features for late-fusion MCC training.")
+    return torch.cat((rr_s, rr_t), dim=0)
 
 
 @torch.no_grad()
@@ -193,7 +201,8 @@ def _target_logits(model, loader: DataLoader, device: torch.device) -> np.ndarra
     values = []
     model.eval()
     for batch in loader:
-        _, logits, _ = model(_batch_x(batch).to(device), return_logits=True)
+        x, rr_features = _unpack_input_batch(batch, device)
+        _, logits, _ = _forward_model_logits(model, x, rr_features=rr_features)
         values.append(logits.detach().cpu().numpy())
     return np.concatenate(values)
 
