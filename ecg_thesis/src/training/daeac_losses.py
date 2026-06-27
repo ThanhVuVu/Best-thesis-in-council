@@ -117,6 +117,48 @@ def weighted_cross_entropy_from_logits(
     return F.cross_entropy(logits, labels, weight=class_weights, reduction="sum") / labels.numel()
 
 
+def task_positive_features_from_logits(
+    logits: torch.Tensor,
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    eps: float = 1.0e-8,
+    detach_task_mask: bool = True,
+) -> torch.Tensor:
+    if logits.ndim != 2:
+        raise ValueError(f"Task-positive alignment expects logits shaped [B, C], got {tuple(logits.shape)}.")
+    if features.ndim != 2:
+        raise ValueError(f"Task-positive alignment expects features shaped [B, D], got {tuple(features.shape)}.")
+    if labels.ndim != 1:
+        raise ValueError(f"Task-positive alignment expects labels shaped [B], got {tuple(labels.shape)}.")
+    if logits.shape[0] != features.shape[0] or labels.shape[0] != features.shape[0]:
+        raise ValueError(
+            "Task-positive alignment batch mismatch: "
+            f"logits={tuple(logits.shape)}, features={tuple(features.shape)}, labels={tuple(labels.shape)}."
+        )
+    if labels.numel() == 0:
+        return features
+    if not features.requires_grad:
+        raise ValueError("Task-positive alignment requires features to require gradients.")
+
+    gt_logits = logits.gather(1, labels.view(-1, 1)).squeeze(1)
+    task_mask = torch.autograd.grad(
+        outputs=gt_logits.sum(),
+        inputs=features,
+        retain_graph=True,
+        create_graph=False,
+        allow_unused=False,
+    )[0]
+    if detach_task_mask:
+        task_mask = task_mask.detach()
+    weighted = task_mask * features
+    numerator = torch.linalg.vector_norm(features.detach(), ord=2, dim=1, keepdim=True)
+    denominator = torch.linalg.vector_norm(weighted, ord=2, dim=1, keepdim=True).clamp_min(float(eps))
+    positive = (numerator / denominator) * weighted
+    if not torch.isfinite(positive).all():
+        raise ValueError("Task-positive alignment produced NaN or Inf features.")
+    return positive
+
+
 def build_daeac_classification_loss(
     cfg: dict[str, Any],
     num_classes: int,

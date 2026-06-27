@@ -27,6 +27,7 @@ from src.training.daeac_losses import (
     compacting_loss,
     distance_from_name,
     separating_loss,
+    task_positive_features_from_logits,
     weighted_cross_entropy_from_logits,
 )
 from src.training.mk_mmd import center_cluster_mk_mmd_loss, center_pair_reference_distance
@@ -179,6 +180,12 @@ def adapt_daeac(
         gamma=float(cfg["lr_decay_gamma"]),
     )
     distance_fn = distance_from_name(str(cfg.get("distance", "l2")))
+    task_align_cfg = dict(config.get("rtd_daeac", {}).get("task_align", {}))
+    task_align_enabled = bool(task_align_cfg.get("enabled", False))
+    if task_align_enabled and str(task_align_cfg.get("feature_key", "features")) not in {"features", "gap_embed"}:
+        raise ValueError("Phase 5 task_align supports feature_key='features' or legacy 'gap_embed'.")
+    if task_align_enabled and bool(task_align_cfg.get("target_positive_if_reliable", False)):
+        raise ValueError("Phase 5 does not compute target task-positive features; set target_positive_if_reliable=false.")
     thresholds = _threshold_tensor(config, cfg, device)
     aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
     reliable_pseudo_enabled = _reliable_pseudo_enabled(config)
@@ -249,6 +256,18 @@ def adapt_daeac(
             z_t = _extract_model_features(model, x_t, rr_features=rr_t)
 
             local_source = batch_centers(z_s, y_s, center_memory.num_classes)
+            if task_align_enabled:
+                task_logits = _task_align_logits_from_features(model, source_output, z_s, rr_s)
+                z_s_align = task_positive_features_from_logits(
+                    task_logits,
+                    z_s,
+                    y_s,
+                    eps=float(task_align_cfg.get("eps", 1.0e-8)),
+                    detach_task_mask=bool(task_align_cfg.get("detach_task_mask", True)),
+                )
+                local_source_align = batch_centers(z_s_align, y_s, center_memory.num_classes)
+            else:
+                local_source_align = local_source
             local_target = batch_centers(
                 z_t,
                 selected_pseudo_t,
@@ -260,8 +279,9 @@ def adapt_daeac(
                 local_target,
                 gamma=float(cfg["center_ema_gamma"]),
             )
+            source_align_for_loss = local_source_align if task_align_enabled else source_for_loss
 
-            loss_align = _cluster_align_loss(source_for_loss, target_for_loss, cfg, distance_fn, device)
+            loss_align = _cluster_align_loss(source_align_for_loss, target_for_loss, cfg, distance_fn, device)
             if z_t.numel() > 0:
                 z_mix = torch.cat([z_s, z_t], dim=0)
                 y_mix = torch.cat([y_s, selected_pseudo_t], dim=0)
@@ -879,6 +899,29 @@ def _forward_model_logits(
         if rr_features is not None:
             raise
         return model(x, return_logits=True)
+
+
+def _task_align_logits_from_features(
+    model: DAEACNetwork,
+    output: dict[str, torch.Tensor],
+    features: torch.Tensor,
+    rr_features: torch.Tensor | None = None,
+) -> torch.Tensor:
+    classifier = model.classifier
+    if isinstance(classifier, DualLateFusionClassifierH):
+        if rr_features is None:
+            raise ValueError("Late-fusion task alignment requires rr_features.")
+        fused = torch.cat([features, rr_features.to(device=features.device, dtype=features.dtype)], dim=1)
+        hidden_1 = classifier.dropout(F.relu(classifier.fc2(fused)))
+        hidden_2 = classifier.dropout(F.relu(classifier.fc2_b(fused)))
+        return 0.5 * (classifier.fc3(hidden_1) + classifier.fc3_b(hidden_2))
+    if isinstance(classifier, LateFusionClassifierH):
+        if rr_features is None:
+            raise ValueError("Late-fusion task alignment requires rr_features.")
+        fused = torch.cat([features, rr_features.to(device=features.device, dtype=features.dtype)], dim=1)
+        hidden = classifier.dropout(F.relu(classifier.fc2(fused)))
+        return classifier.fc3(hidden)
+    return output["logits"]
 
 
 def compute_global_source_centers(

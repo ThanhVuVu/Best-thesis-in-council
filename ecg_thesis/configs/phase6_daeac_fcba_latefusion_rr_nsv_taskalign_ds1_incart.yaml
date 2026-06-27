@@ -1,0 +1,21 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_daeac_ds1_incart.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_taskalign_ds1_incart
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "task_align", "ds1_incart"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_taskalign_ds1_incart
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_taskalign_ds1_incart
+
+rtd_daeac:
+  task_align:
+    enabled: true
+    feature_key: features
+    source_positive_only: true
+    target_positive_if_reliable: false
+    detach_task_mask: true
+    eps: 1.0e-8
