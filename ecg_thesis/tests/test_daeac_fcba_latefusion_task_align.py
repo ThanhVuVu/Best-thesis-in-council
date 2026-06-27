@@ -131,6 +131,7 @@ class DAEACFCBALateFusionTaskAlignTests(unittest.TestCase):
                 config = load_phase1_config(str(root / "configs" / name))
                 model = build_daeac_model(config, torch.device("cpu"))
                 task_align = config["rtd_daeac"]["task_align"]
+                thresholds = config["adaptation"]["pseudo_thresholds"]
 
                 self.assertEqual(config["data"]["num_classes"], 3)
                 self.assertEqual(config["data"]["rr_mode"], "real")
@@ -143,6 +144,9 @@ class DAEACFCBALateFusionTaskAlignTests(unittest.TestCase):
                 self.assertTrue(task_align["source_positive_only"])
                 self.assertFalse(task_align["target_positive_if_reliable"])
                 self.assertTrue(task_align["detach_task_mask"])
+                self.assertEqual(float(thresholds["N"]), 0.999)
+                self.assertEqual(float(thresholds["S"]), 0.90)
+                self.assertEqual(float(thresholds["V"]), 0.97)
                 self.assertIsInstance(model.classifier, LateFusionClassifierH)
                 self.assertEqual(model.feature_dim, 128)
 
