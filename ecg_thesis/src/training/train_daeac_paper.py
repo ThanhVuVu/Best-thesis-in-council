@@ -215,6 +215,8 @@ def adapt_daeac(
     fixed_dynamic_state = DynamicWeightController(float(cfg["beta1"]), float(cfg["beta2"])).fixed_state()
     hybrid_cfg = dict(cfg.get("hybrid_mkmmd_mcc", {}))
     hybrid_enabled = bool(hybrid_cfg.get("enabled", False))
+    hybrid_mkmmd_enabled = hybrid_enabled and float(cfg.get("lambda_mmd", 0.0)) != 0.0
+    hybrid_mcc_enabled = hybrid_enabled and float(dict(cfg.get("mcc", {})).get("mu", 0.0)) != 0.0
     hybrid_state: dict[str, Any] | None = None
     thresholds = _threshold_tensor(config, cfg, device)
     aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
@@ -239,7 +241,7 @@ def adapt_daeac(
     )
     center_memory.refresh_mixed()
     _prepare_center_mkmmd_config(cfg, center_memory)
-    if hybrid_enabled:
+    if hybrid_mkmmd_enabled:
         hybrid_state = _prepare_hybrid_mkmmd_mcc_state(
             model,
             source_loader,
@@ -273,10 +275,9 @@ def adapt_daeac(
         + " checkpoint_policy=maximum_ericsson_v_measure"
     )
     if hybrid_enabled:
-        assert hybrid_state is not None
         print(
             "[uda setup] hybrid_mkmmd_mcc="
-            + f"layers={list(hybrid_state['layer_weights'])} "
+            + f"layers={list(hybrid_state['layer_weights']) if hybrid_state is not None else []} "
             + f"lambda_mmd={float(cfg['lambda_mmd']):.4f} "
             + f"mcc_mu={float(cfg['mcc']['mu']):.4f} "
             + f"mcc_temperature={float(cfg['mcc']['temperature']):.4f}"
@@ -354,20 +355,24 @@ def adapt_daeac(
             loss_mcc = z_s.sum() * 0.0
             hybrid_row: dict[str, float] = {}
             if hybrid_enabled:
-                assert hybrid_state is not None
                 assert target_loss_iter is not None
                 x_u, rr_u = _unpack_input_batch(next(target_loss_iter), device)
                 target_output = _forward_model_dict(model, x_u, rr_features=rr_u)
-                loss_mmd, layer_losses = _hybrid_mkmmd_loss(
-                    source_output["feature_layers"],
-                    target_output["feature_layers"],
-                    hybrid_state,
-                )
-                loss_mcc, mcc_diag = minimum_class_confusion_loss(
-                    target_output["logits"],
-                    temperature=float(cfg["mcc"]["temperature"]),
-                    return_diagnostics=True,
-                )
+                layer_losses: dict[str, torch.Tensor] = {}
+                mcc_diag: dict[str, Any] | None = None
+                if hybrid_mkmmd_enabled:
+                    assert hybrid_state is not None
+                    loss_mmd, layer_losses = _hybrid_mkmmd_loss(
+                        source_output["feature_layers"],
+                        target_output["feature_layers"],
+                        hybrid_state,
+                    )
+                if hybrid_mcc_enabled:
+                    loss_mcc, mcc_diag = minimum_class_confusion_loss(
+                        target_output["logits"],
+                        temperature=float(cfg["mcc"]["temperature"]),
+                        return_diagnostics=True,
+                    )
                 hybrid_row = _hybrid_batch_log_row(
                     loss_mmd,
                     layer_losses,
@@ -390,7 +395,7 @@ def adapt_daeac(
             loss_total.backward()
             optimizer.step()
             scheduler.step()
-            if hybrid_enabled:
+            if hybrid_mkmmd_enabled:
                 assert hybrid_state is not None
                 _update_hybrid_kernel_beta(
                     source_output["feature_layers"],
@@ -1366,7 +1371,7 @@ def _hybrid_mkmmd_loss(
 def _update_hybrid_kernel_beta(
     source_layers: dict[str, torch.Tensor],
     target_layers: dict[str, torch.Tensor],
-    state: dict[str, Any],
+    state: dict[str, Any] | None,
     cfg: dict[str, Any],
     global_step: int,
 ) -> None:
@@ -1399,7 +1404,7 @@ def _hybrid_batch_log_row(
     loss_mmd: torch.Tensor,
     layer_losses: dict[str, torch.Tensor],
     loss_mcc: torch.Tensor,
-    mcc_diag: dict[str, Any],
+    mcc_diag: dict[str, Any] | None,
     state: dict[str, Any],
     cfg: dict[str, Any],
     class_names: list[str],
@@ -1409,15 +1414,17 @@ def _hybrid_batch_log_row(
         "loss_mcc": float(loss_mcc.detach().cpu()),
         "weighted_mmd": float(cfg.get("lambda_mmd", 0.0)) * float(loss_mmd.detach().cpu()),
         "weighted_mcc": float(dict(cfg.get("mcc", {})).get("mu", 0.0)) * float(loss_mcc.detach().cpu()),
-        "target_entropy": float(mcc_diag["entropy_mean"]),
+        "target_entropy": float(mcc_diag["entropy_mean"]) if mcc_diag is not None else 0.0,
     }
     for name, value in layer_losses.items():
         row[f"mmd_{name}"] = float(value.detach().cpu())
-        beta = state["betas"][name]
-        row[f"mkmmd_beta_entropy_{name}"] = float((-(beta * beta.clamp_min(1.0e-12).log()).sum()).detach().cpu())
-    for idx, count in enumerate(mcc_diag["pred_counts"]):
-        row[f"target_pred_count_{class_names[idx]}"] = float(count)
-    row.update(_soft_confusion_entries(mcc_diag["soft_confusion"], class_names, prefix="mcc"))
+        if state is not None:
+            beta = state["betas"][name]
+            row[f"mkmmd_beta_entropy_{name}"] = float((-(beta * beta.clamp_min(1.0e-12).log()).sum()).detach().cpu())
+    if mcc_diag is not None:
+        for idx, count in enumerate(mcc_diag["pred_counts"]):
+            row[f"target_pred_count_{class_names[idx]}"] = float(count)
+        row.update(_soft_confusion_entries(mcc_diag["soft_confusion"], class_names, prefix="mcc"))
     return row
 
 

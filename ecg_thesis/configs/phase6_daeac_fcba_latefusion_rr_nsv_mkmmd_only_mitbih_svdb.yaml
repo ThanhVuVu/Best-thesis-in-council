@@ -1,0 +1,33 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_daeac_mitbih_svdb.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_mkmmd_only_mitbih_svdb
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "mkmmd_only", "mitbih_svdb"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mkmmd_only_mitbih_svdb
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_mkmmd_only_mitbih_svdb
+  hybrid_mkmmd_mcc:
+    enabled: true
+  lambda_mmd: 0.05
+  mkmmd:
+    estimator: linear_quad
+    kernel_num: 33
+    kernel_mul: 1.41421356237
+    gamma_mode: fixed_median_subset
+    gamma_sample_size: 4096
+    gamma_min: 1.0e-6
+    beta: qp
+    beta_update_interval: 1
+    qp_epsilon: 0.001
+    qp_momentum: 0.9
+    qp_positivity_floor: 1.0e-8
+    layers:
+      gap_embed: 0.5
+      late_fusion_hidden: 1.0
+  mcc:
+    mu: 0.0
+    temperature: 2.5

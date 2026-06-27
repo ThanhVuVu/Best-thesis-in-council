@@ -1,0 +1,18 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_daeac_ds1_ds2.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_mcc_only_ds1_ds2
+    tags: ["phase6", "daeac", "fcba", "rr_late_fusion", "nsv", "mcc_only", "ds1_ds2"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_mcc_only_ds1_ds2
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_mcc_only_ds1_ds2
+  hybrid_mkmmd_mcc:
+    enabled: true
+  lambda_mmd: 0.0
+  mcc:
+    mu: 0.05
+    temperature: 2.5
