@@ -1,0 +1,24 @@
+extends: phase6_daeac_fcba_latefusion_rr_nsv_daeac_mitbih_incart.yaml
+
+logging:
+  wandb:
+    group: phase6_daeac_fcba_latefusion_rr_nsv_dan_mkmmd_mitbih_incart
+    tags: ["phase6", "daeac_arch", "fcba", "rr_late_fusion", "nsv", "dan", "mkmmd", "mitbih_incart"]
+
+paths:
+  output_dir: outputs/phase6_daeac_fcba_latefusion_rr_nsv_dan_mkmmd_mitbih_incart
+
+adaptation:
+  checkpoint_prefix: daeac_fcba_rr_nsv_dan_mkmmd_mitbih_incart
+  lambda_mmd: 0.05
+  mkmmd:
+    estimator: linear_quad
+    kernel_num: 33
+    kernel_mul: 1.41421356237
+    gamma_mode: fixed_median_subset
+    gamma_sample_size: 4096
+    gamma_min: 1.0e-6
+    beta: uniform
+    layers:
+      gap_embed: 0.5
+      late_fusion_hidden: 1.0

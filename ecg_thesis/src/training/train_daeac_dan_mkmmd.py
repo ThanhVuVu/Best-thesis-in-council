@@ -17,6 +17,8 @@ from src.training.dan_mkmmd import (
 )
 from src.training.train_daeac_paper import (
     _class_weights,
+    _unpack_input_batch,
+    _unpack_source_batch,
     build_daeac_model,
     evaluate_daeac_model,
     load_daeac_checkpoint,
@@ -71,16 +73,15 @@ def train_daeac_dan_mkmmd(
     for epoch in range(int(cfg["epochs"])):
         model.train()
         rows: list[dict[str, float]] = []
-        for x_s, y_s in source_loader:
-            x_t_batch = next(target_iter)
-            x_t = _batch_x(x_t_batch)
-            x_s = x_s.to(device)
-            y_s = y_s.to(device)
-            x_t = x_t.to(device)
+        for source_batch in source_loader:
+            x_s, rr_s, y_s = _unpack_source_batch(source_batch, device)
+            x_t, rr_t = _unpack_input_batch(next(target_iter), device)
 
-            source_layers = model.extract_feature_layers(x_s)
-            target_layers = model.extract_feature_layers(x_t)
-            logits_s, _ = model.classifier(source_layers["gap_embed"], return_logits=True)
+            source_output = model(x_s, rr_features=rr_s, return_dict=True)
+            target_output = model(x_t, rr_features=rr_t, return_dict=True)
+            source_layers = source_output["feature_layers"]
+            target_layers = target_output["feature_layers"]
+            logits_s = source_output["logits"]
             loss_cls = weighted_cross_entropy_from_logits(logits_s, y_s, class_weights)
             loss_mmd, layer_losses = _multi_layer_mkmmd_loss(source_layers, target_layers, layer_weights, gammas, beta)
             loss_total = loss_cls + float(cfg["lambda_mmd"]) * loss_mmd
@@ -198,8 +199,8 @@ def _collect_layer_features(
     model.eval()
     with torch.no_grad():
         for batch in loader:
-            x = _batch_x(batch).to(device)
-            layers = model.extract_feature_layers(x)
+            x, rr_features = _unpack_input_batch(batch, device)
+            layers = model(x, rr_features=rr_features, return_dict=True)["feature_layers"]
             take = min(int(x.shape[0]), max(int(max_samples) - count, 0))
             if take <= 0:
                 break
@@ -211,11 +212,6 @@ def _collect_layer_features(
     if count == 0:
         raise ValueError("Cannot estimate MK-MMD gammas from an empty dataset.")
     return {name: torch.cat(values, dim=0) for name, values in rows.items()}
-
-
-def _batch_x(batch):
-    return batch[0] if isinstance(batch, (tuple, list)) else batch
-
 
 def _cycle(loader: DataLoader):
     while True:
