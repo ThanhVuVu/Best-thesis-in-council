@@ -10,7 +10,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.daeac_dataset import DAEACDataset, DAEACTargetUnlabeledDataset
-from src.models.daeac_paper import ClassifierH
 from src.training.daeac_losses import (
     build_daeac_classification_loss,
     compacting_loss,
@@ -92,11 +91,7 @@ def train_daeac_hybrid_mkmmd_mcc(
     qp_q_ema: torch.Tensor | None = None
     global_step = 0
 
-    aux_classifier = ClassifierH(
-        feature_dim=int(config["model"]["feature_dim"]),
-        num_classes=int(config["data"]["num_classes"]),
-        dropout=0.0,
-    ).to(device)
+    aux_classifier = copy.deepcopy(model.classifier).to(device).eval()
     wandb_run = init_wandb(config, job_type="train_daeac_hybrid_mkmmd_mcc", default_name=prefix)
 
     latest_path = ckpt_dir / f"{prefix}_latest.pt"
