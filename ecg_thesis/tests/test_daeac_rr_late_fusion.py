@@ -12,6 +12,7 @@ from src.data.daeac_preprocess import compute_rr_features_from_diffs
 from src.models.daeac_paper import DAEACNetwork, LateFusionClassifierH
 from src.training.train_daeac_paper import build_daeac_model
 from src.utils.io import load_config
+from scripts.phase6_daeac_paper.common import load_phase1_config
 
 
 class DAEACRRLateFusionTests(unittest.TestCase):
@@ -98,6 +99,8 @@ class DAEACRRLateFusionTests(unittest.TestCase):
         self.assertIsInstance(model.classifier, LateFusionClassifierH)
         self.assertEqual(model.feature_dim, 128)
         self.assertEqual(tuple(output["features"].shape), (2, 128))
+        self.assertEqual(tuple(output["feature_layers"]["gap_embed"].shape), (2, 128))
+        self.assertEqual(tuple(output["feature_layers"]["late_fusion_hidden"].shape), (2, 64))
         self.assertEqual(tuple(features.shape), (2, 128))
         self.assertEqual(tuple(logits.shape), (2, 4))
         self.assertEqual(tuple(probs.shape), (2, 4))
@@ -113,6 +116,26 @@ class DAEACRRLateFusionTests(unittest.TestCase):
         self.assertEqual(model.feature_dim, 128)
         self.assertTrue(config["data"]["return_rr_features"])
         self.assertTrue(config["data"]["morphology_only"])
+
+    def test_hybrid_mkmmd_mcc_configs_keep_late_fusion_nsv_contract(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        configs = sorted(root.glob("configs/phase6_daeac_fcba_latefusion_rr_nsv_hybrid_mkmmd_mcc_*.yaml"))
+        self.assertEqual(len(configs), 5)
+        for path in configs:
+            config = load_phase1_config(str(path))
+            model = build_daeac_model(config, torch.device("cpu"))
+
+            self.assertIsInstance(model.classifier, LateFusionClassifierH)
+            self.assertEqual(config["data"]["class_names"], ["N", "S", "V"])
+            self.assertEqual(config["data"]["num_classes"], 3)
+            self.assertTrue(config["data"]["return_rr_features"])
+            self.assertTrue(config["data"]["morphology_only"])
+            self.assertTrue(config["model"]["late_fusion"]["enabled"])
+            self.assertTrue(config["adaptation"]["hybrid_mkmmd_mcc"]["enabled"])
+            self.assertEqual(
+                config["adaptation"]["mkmmd"]["layers"],
+                {"gap_embed": 0.5, "late_fusion_hidden": 1.0},
+            )
 
 
 def _write_sample_npz(path: Path) -> None:

@@ -337,14 +337,25 @@ class LateFusionClassifierH(nn.Module):
     def extract_morph_features(self, features: torch.Tensor) -> torch.Tensor:
         return self.dropout(F.relu(self.fc1(features)))
 
+    def extract_hidden_features(
+        self,
+        morph_features: torch.Tensor,
+        rr_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if rr_features is None:
+            raise ValueError("LateFusionClassifierH requires rr_features.")
+        if rr_features.ndim != 2 or rr_features.shape[1] != self.rr_dim:
+            raise ValueError(f"Expected rr_features shape [B, {self.rr_dim}], got {tuple(rr_features.shape)}.")
+        fused = torch.cat([morph_features, rr_features.to(device=morph_features.device, dtype=morph_features.dtype)], dim=1)
+        return self.dropout(F.relu(self.fc2(fused)))
+
     def forward(self, features: torch.Tensor, rr_features: torch.Tensor | None = None, return_logits: bool = False):
         if rr_features is None:
             raise ValueError("LateFusionClassifierH requires rr_features.")
         if rr_features.ndim != 2 or rr_features.shape[1] != self.rr_dim:
             raise ValueError(f"Expected rr_features shape [B, {self.rr_dim}], got {tuple(rr_features.shape)}.")
         morph_features = self.extract_morph_features(features)
-        fused = torch.cat([morph_features, rr_features.to(device=features.device, dtype=features.dtype)], dim=1)
-        hidden = self.dropout(F.relu(self.fc2(fused)))
+        hidden = self.extract_hidden_features(morph_features, rr_features)
         logits = self.fc3(hidden)
         probs = torch.softmax(logits, dim=1)
         if return_logits:
@@ -462,13 +473,15 @@ class DAEACNetwork(nn.Module):
             return self.classifier.extract_morph_features(features)
         return features
 
-    def extract_feature_layers(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+    def extract_feature_layers(self, x: torch.Tensor, rr_features: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
         layers = self.feature_extractor.forward_layers(x)
         layers["pre_adaptation_gap"] = layers["gap_embed"]
         layers["dan_fc"] = self.adaptation_fc(layers["gap_embed"])
         if isinstance(self.classifier, LateFusionClassifierH):
             layers["pre_fusion_gap"] = layers["dan_fc"]
             layers["gap_embed"] = self.classifier.extract_morph_features(layers["dan_fc"])
+            if rr_features is not None:
+                layers["late_fusion_hidden"] = self.classifier.extract_hidden_features(layers["gap_embed"], rr_features)
         else:
             layers["gap_embed"] = layers["dan_fc"]
         return layers
@@ -481,7 +494,7 @@ class DAEACNetwork(nn.Module):
         return_dict: bool = False,
     ):
         if return_dict:
-            layers = self.extract_feature_layers(x)
+            layers = self.extract_feature_layers(x, rr_features=rr_features)
             features = layers["gap_embed"]
             if isinstance(self.classifier, LateFusionClassifierH):
                 raw_features = layers["pre_fusion_gap"]
