@@ -50,6 +50,12 @@ def main() -> None:
     parser.add_argument("--output-dir", default="outputs/phase6_daeac_fcba_latefusion_rr_nsv_tsne_all_methods")
     parser.add_argument("--source-dataset", default="source_eval", choices=["source_eval", "source_train"])
     parser.add_argument("--target-dataset", default="target_test", choices=["target_test", "target_val"])
+    parser.add_argument(
+        "--plot-scope",
+        choices=["source_target", "target"],
+        default="source_target",
+        help="Use source+target points or target-only points for each checkpoint panel.",
+    )
     parser.add_argument("--max-source-samples", type=int, default=1500)
     parser.add_argument("--max-target-samples", type=int, default=1500)
     parser.add_argument("--batch-size", type=int, default=None)
@@ -78,13 +84,15 @@ def main() -> None:
     for scenario, rows in summary.items():
         scenario_specs = _ordered_scenario_specs(specs, scenario)
         scenario_results = [(spec, cached[(spec.scenario, spec.method)]) for spec in scenario_specs]
-        _plot_grid(scenario, scenario_results, output_root / scenario / "before_after_all_methods_tsne_grid.png", seed=args.seed, dpi=args.dpi)
+        grid_name = "before_after_all_methods_target_tsne_grid.png" if args.plot_scope == "target" else "before_after_all_methods_tsne_grid.png"
+        _plot_grid(scenario, scenario_results, output_root / scenario / grid_name, seed=args.seed, dpi=args.dpi, plot_scope=args.plot_scope)
 
     write_json(
         {
             "manifest": str(args.manifest),
             "source_dataset": args.source_dataset,
             "target_dataset": args.target_dataset,
+            "plot_scope": args.plot_scope,
             "max_source_samples": args.max_source_samples,
             "max_target_samples": args.max_target_samples,
             "scenarios": summary,
@@ -164,32 +172,44 @@ def _extract_source_target(spec: RunSpec, args: argparse.Namespace, device: torc
     class_names = list(config["data"]["class_names"])
     batch_size = int(args.batch_size or config.get("evaluation", {}).get("batch_size", 256))
     dataset_kwargs = _dataset_kwargs(config, class_names)
-    source_ds = subset_first(
-        DAEACDataset(cfg_path(config, "data", args.source_dataset), **dataset_kwargs),
-        args.max_source_samples,
-    )
     target_ds = subset_first(
         DAEACDataset(cfg_path(config, "data", args.target_dataset), **dataset_kwargs),
         args.max_target_samples,
     )
-    source_loader = DataLoader(source_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    source_loader = None
+    if args.plot_scope == "source_target":
+        source_ds = subset_first(
+            DAEACDataset(cfg_path(config, "data", args.source_dataset), **dataset_kwargs),
+            args.max_source_samples,
+        )
+        source_loader = DataLoader(source_ds, batch_size=batch_size, shuffle=False, num_workers=0)
     target_loader = DataLoader(target_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
     if spec.checkpoint_type == "adversarial":
         model, checkpoint = load_daeac_adversarial_checkpoint(spec.checkpoint, device)
-        source = evaluate_daeac_adversarial_model(model, source_loader, device, class_names, desc=f"{spec.method} source")
+        source = (
+            evaluate_daeac_adversarial_model(model, source_loader, device, class_names, desc=f"{spec.method} source")
+            if source_loader is not None
+            else None
+        )
         target = evaluate_daeac_adversarial_model(model, target_loader, device, class_names, desc=f"{spec.method} target")
         checkpoint_method = checkpoint.get("method")
     else:
         model = load_daeac_checkpoint(spec.checkpoint, config, device)
-        source = evaluate_daeac_model(model, source_loader, device, class_names)
+        source = evaluate_daeac_model(model, source_loader, device, class_names) if source_loader is not None else None
         target = evaluate_daeac_model(model, target_loader, device, class_names)
         checkpoint_method = "daeac"
 
-    features = np.concatenate([source["features"], target["features"]], axis=0)
-    labels = np.concatenate([source["y_true"], target["y_true"]], axis=0)
-    preds = np.concatenate([source["y_pred"], target["y_pred"]], axis=0)
-    domains = np.asarray(["source"] * len(source["y_true"]) + ["target"] * len(target["y_true"]))
+    if source is None:
+        features = target["features"]
+        labels = target["y_true"]
+        preds = target["y_pred"]
+        domains = np.asarray(["target"] * len(target["y_true"]))
+    else:
+        features = np.concatenate([source["features"], target["features"]], axis=0)
+        labels = np.concatenate([source["y_true"], target["y_true"]], axis=0)
+        preds = np.concatenate([source["y_pred"], target["y_pred"]], axis=0)
+        domains = np.asarray(["source"] * len(source["y_true"]) + ["target"] * len(target["y_true"]))
     return {
         "features": features,
         "labels": labels,
@@ -197,7 +217,7 @@ def _extract_source_target(spec: RunSpec, args: argparse.Namespace, device: torc
         "domains": domains,
         "class_names": class_names,
         "checkpoint_method": checkpoint_method,
-        "source_metrics": source["metrics"],
+        "source_metrics": source["metrics"] if source is not None else None,
         "target_metrics": target["metrics"],
     }
 
@@ -232,7 +252,14 @@ def _plot_tsne_panel(result: dict[str, Any], path: Path, seed: int, dpi: int, ti
     plt.close()
 
 
-def _plot_grid(scenario: str, results: list[tuple[RunSpec, dict[str, Any]]], path: Path, seed: int, dpi: int) -> None:
+def _plot_grid(
+    scenario: str,
+    results: list[tuple[RunSpec, dict[str, Any]]],
+    path: Path,
+    seed: int,
+    dpi: int,
+    plot_scope: str,
+) -> None:
     if not results:
         return
     cols = min(3, len(results))
@@ -253,7 +280,8 @@ def _plot_grid(scenario: str, results: list[tuple[RunSpec, dict[str, Any]]], pat
         ax.axis("off")
     handles, labels = axes.ravel()[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", fontsize=8, markerscale=1.5, ncol=min(6, len(labels)))
-    fig.suptitle(f"{scenario} before vs after adaptation, joint t-SNE", y=0.98)
+    scope_label = "target-only" if plot_scope == "target" else "source+target"
+    fig.suptitle(f"{scenario} before vs after adaptation, joint {scope_label} t-SNE", y=0.98)
     fig.tight_layout(rect=(0, 0.06, 1, 0.95))
     ensure_dir(path.parent)
     fig.savefig(path, dpi=dpi)
@@ -340,7 +368,7 @@ def _summary_row(spec: RunSpec, result: dict[str, Any], figure_path: Path) -> di
             name: int(np.sum(labels == idx))
             for idx, name in enumerate(result["class_names"])
         },
-        "source_macro_f1": float(result["source_metrics"]["macro_f1"]),
+        "source_macro_f1": float(result["source_metrics"]["macro_f1"]) if result["source_metrics"] is not None else None,
         "target_macro_f1": float(result["target_metrics"]["macro_f1"]),
     }
 
