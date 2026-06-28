@@ -234,6 +234,7 @@ __marimo__/
 # ECG datasets and generated artifacts
 mit-bih-arrhythmia-database-1.0.0/
 st-petersburg-incart-12-lead-arrhythmia-database-1.0.0/
+mit-bih-supraventricular-arrhythmia-database-1.0.0/
 data/raw/
 data/processed/
 outputs/
