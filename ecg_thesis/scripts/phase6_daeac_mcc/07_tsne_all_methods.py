@@ -239,9 +239,13 @@ def _plot_grid(scenario: str, results: list[tuple[RunSpec, dict[str, Any]]], pat
     rows = int(np.ceil(len(results) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(5.2 * cols, 4.4 * rows), squeeze=False)
     coords_by_method = _joint_embeddings(results, seed)
+    xlim, ylim = _shared_limits(list(coords_by_method.values()))
     for ax, (spec, result) in zip(axes.ravel(), results):
         coords = coords_by_method[spec.method]
         _scatter_domains(coords, result["domains"], result["labels"], result["class_names"], ax=ax)
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.set_aspect("equal", adjustable="box")
         ax.set_title(f"{_stage_title(spec.stage)}\n{spec.method}")
         ax.set_xlabel("t-SNE-1")
         ax.set_ylabel("t-SNE-2")
@@ -270,6 +274,17 @@ def _joint_embeddings(results: list[tuple[RunSpec, dict[str, Any]]], seed: int) 
         coords_by_method[spec.method] = coords[start:stop]
         start = stop
     return coords_by_method
+
+
+def _shared_limits(coords_list: list[np.ndarray]) -> tuple[tuple[float, float], tuple[float, float]]:
+    coords = np.concatenate(coords_list, axis=0)
+    if coords.size == 0:
+        return (-1.0, 1.0), (-1.0, 1.0)
+    x_min, y_min = np.min(coords, axis=0)
+    x_max, y_max = np.max(coords, axis=0)
+    x_pad = max((float(x_max) - float(x_min)) * 0.05, 1.0)
+    y_pad = max((float(y_max) - float(y_min)) * 0.05, 1.0)
+    return (float(x_min) - x_pad, float(x_max) + x_pad), (float(y_min) - y_pad, float(y_max) + y_pad)
 
 
 def _embed(features: np.ndarray, seed: int) -> np.ndarray:
